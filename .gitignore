@@ -1,12 +1,11 @@
-### Windows
-# Windows thumbnail cache files
-Thumbs.db
+.DS_Store
+xcuserdata
+*.RPP-bak
+build-*
 
-# Folder config file
-[Dd]esktop.ini
-
-# Recycle Bin used on file shares
-$RECYCLE.BIN/
-
-# Windows shortcuts
-*.lnk
+*.ipch
+*.db
+*.suo
+*/.vs
+*.pem
+mkcert*
