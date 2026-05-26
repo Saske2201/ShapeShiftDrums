@@ -7072,6 +7072,17 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
         };
     ensureMixSize(nFrames);
 
+    // Soft clipper: transparent below -1.4 dBFS (0.85), smoothly saturates above.
+ // Prevents hard clipping when multiple drums hit simultaneously.
+    auto softClip = [](double x) -> double {
+        constexpr double kKnee = 0.85;
+        const double ax = std::abs(x);
+        if (ax <= kKnee) return x;
+        const double over = (ax - kKnee) / (1.0 - kKnee);
+        const double sat = kKnee + (1.0 - kKnee) * std::tanh(over);
+        return x < 0.0 ? -sat : sat;
+        };
+
     for (int s = 0; s < nFrames; ++s)
     {
         const double l =
@@ -7090,8 +7101,8 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
             (double)mSplashR[s] + (double)mRideR[s] + (double)mChinaR[s] +
             (double)mTmpR[s];
 
-        mMixL[s] = (sample)l;
-        mMixR[s] = (sample)r;
+        mMixL[s] = (sample)softClip(l);
+        mMixR[s] = (sample)softClip(r);
     }
 
     if (routeMixToMain)
