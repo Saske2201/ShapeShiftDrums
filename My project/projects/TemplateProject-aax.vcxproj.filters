@@ -1,0 +1,299 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="..\TemplateProject.cpp" />
+    <ClCompile Include="..\..\iPlug2\IPlug\AAX\IPlugAAX.cpp">
+      <Filter>IPlug\AAX</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IPlug\AAX\IPlugAAX_Describe.cpp">
+      <Filter>IPlug\AAX</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IPlug\AAX\IPlugAAX_Parameters.cpp">
+      <Filter>IPlug\AAX</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\Dependencies\IPlug\AAX_SDK\Interfaces\AAX_Exports.cpp">
+      <Filter>IPlug\AAX</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\IControl.cpp">
+      <Filter>IGraphics</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\IGraphics.cpp">
+      <Filter>IGraphics</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\IGraphicsEditorDelegate.cpp">
+      <Filter>IGraphics</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\Drawing\IGraphicsNanoVG.cpp">
+      <Filter>IGraphics\Drawing</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\Platforms\IGraphicsWin.cpp">
+      <Filter>IGraphics\Platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\Controls\IControls.cpp">
+      <Filter>IGraphics\Controls</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\Controls\IPopupMenuControl.cpp">
+      <Filter>IGraphics\Controls</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\Controls\ITextEntryControl.cpp">
+      <Filter>IGraphics\Controls</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IPlug\IPlugAPIBase.cpp">
+      <Filter>IPlug</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IPlug\IPlugParameter.cpp">
+      <Filter>IPlug</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IPlug\IPlugPaths.cpp">
+      <Filter>IPlug</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IPlug\IPlugPluginBase.cpp">
+      <Filter>IPlug</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IPlug\IPlugProcessor.cpp">
+      <Filter>IPlug</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IPlug\IPlugTimer.cpp">
+      <Filter>IPlug</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\iPlug2\IGraphics\Drawing\IGraphicsSkia.cpp">
+      <Filter>IGraphics\Drawing</Filter>
+    </ClCompile>
+    <ClCompile Include="MasterEQ.cpp">
+      <Filter>Master\EQ</Filter>
+    </ClCompile>
+    <ClCompile Include="MasterGlue.cpp">
+      <Filter>Master\Glue</Filter>
+    </ClCompile>
+    <ClCompile Include="MasterTame.cpp">
+      <Filter>Master\Tame</Filter>
+    </ClCompile>
+    <ClCompile Include="ParallelComp.cpp">
+      <Filter>Master\ParallelComp</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\TemplateProject.h" />
+    <ClInclude Include="..\resources\resource.h">
+      <Filter>resources</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\AAX\IPlugAAX.h">
+      <Filter>IPlug\AAX</Filter>
+    </ClInclude>
+    <ClInclude Include="..\config.h" />
+    <ClInclude Include="..\..\iPlug2\IPlug\AAX\IPlugAAX_TaperDelegate.h">
+      <Filter>IPlug\AAX</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\AAX\IPlugAAX_Parameters.h">
+      <Filter>IPlug\AAX</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IControl.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphics.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphicsConstants.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphicsEditorDelegate.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphicsLiveEdit.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphicsPopupMenu.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphicsStructs.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphicsPrivate.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphicsUtilities.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphics_include_in_plug_hdr.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphics_include_in_plug_src.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\IGraphics_select.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Drawing\IGraphicsNanoVG.h">
+      <Filter>IGraphics\Drawing</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Platforms\IGraphicsLinux.h">
+      <Filter>IGraphics\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Platforms\IGraphicsMac.h">
+      <Filter>IGraphics\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Platforms\IGraphicsMac_view.h">
+      <Filter>IGraphics\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Platforms\IGraphicsWeb.h">
+      <Filter>IGraphics\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Platforms\IGraphicsWin.h">
+      <Filter>IGraphics\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Controls\IControls.h">
+      <Filter>IGraphics\Controls</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Controls\IFPSDisplayControl.h">
+      <Filter>IGraphics\Controls</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Controls\IPopupMenuControl.h">
+      <Filter>IGraphics\Controls</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Controls\IVKeyboardControl.h">
+      <Filter>IGraphics\Controls</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Controls\IVMeterControl.h">
+      <Filter>IGraphics\Controls</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Controls\IVMultiSliderControl.h">
+      <Filter>IGraphics\Controls</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Controls\IVScopeControl.h">
+      <Filter>IGraphics\Controls</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Controls\ITextEntryControl.h">
+      <Filter>IGraphics\Controls</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlug_include_in_plug_hdr.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlug_include_in_plug_src.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugAPIBase.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugConstants.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugDelegate_select.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugEditorDelegate.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugLogger.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugMidi.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugParameter.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugPaths.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugPlatform.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugPluginBase.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\ISender.h">
+      <Filter>IGraphics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugProcessor.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugQueue.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugStructs.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugTimer.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IPlug\IPlugUtilities.h">
+      <Filter>IPlug</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\iPlug2\IGraphics\Drawing\IGraphicsSkia.h">
+      <Filter>IGraphics\Drawing</Filter>
+    </ClInclude>
+    <ClInclude Include="MasterEQ.h">
+      <Filter>Master\EQ</Filter>
+    </ClInclude>
+    <ClInclude Include="MasterGlue.h">
+      <Filter>Master\Glue</Filter>
+    </ClInclude>
+    <ClInclude Include="MasterTame.h">
+      <Filter>Master\Tame</Filter>
+    </ClInclude>
+    <ClInclude Include="ParallelComp.h">
+      <Filter>Master\ParallelComp</Filter>
+    </ClInclude>
+    <ClInclude Include="..\MidiQueueCompat.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="resources">
+      <UniqueIdentifier>{a579504a-f161-47bd-bd30-7f18317f0e93}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IPlug">
+      <UniqueIdentifier>{047ecfad-1a55-49a2-8621-1a4ad2905606}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IPlug\AAX">
+      <UniqueIdentifier>{1fc481f5-85f5-43e6-924f-2be0689a4710}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="config">
+      <UniqueIdentifier>{464e659e-834a-453a-9150-dbaf783f8307}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IGraphics">
+      <UniqueIdentifier>{68bdd895-46fe-4c63-a6b1-5f5eb18cccd3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IGraphics\Drawing">
+      <UniqueIdentifier>{ca6c268f-0123-4612-a634-bc446f5c5128}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IGraphics\Platform">
+      <UniqueIdentifier>{7c4030c7-b478-4da8-a5fe-4771406c07aa}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IGraphics\Controls">
+      <UniqueIdentifier>{3c740de7-2371-4065-bf3d-5af9193c7b7d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Master">
+      <UniqueIdentifier>{ff92a1c1-4f83-4a2f-a3e5-60ee45025589}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Master\EQ">
+      <UniqueIdentifier>{2b0a3f73-1477-4671-92be-cd7c25e65b43}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Master\Glue">
+      <UniqueIdentifier>{a1026efe-d884-436b-acf8-090a20cbdb5a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Master\Tame">
+      <UniqueIdentifier>{97d9dc31-d0f7-463e-9ac5-e51903bc6423}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Master\ParallelComp">
+      <UniqueIdentifier>{15376b23-ad50-42cb-929a-f6f27128ed51}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="..\resources\main.rc">
+      <Filter>resources</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\config\TemplateProject-ios.xcconfig">
+      <Filter>config</Filter>
+    </None>
+    <None Include="..\config\TemplateProject-web.mk">
+      <Filter>config</Filter>
+    </None>
+    <None Include="..\config\TemplateProject-win.props">
+      <Filter>config</Filter>
+    </None>
+    <None Include="..\config\TemplateProject-mac.xcconfig">
+      <Filter>config</Filter>
+    </None>
+  </ItemGroup>
+</Project>

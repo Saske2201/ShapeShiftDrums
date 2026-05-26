@@ -1,0 +1,195 @@
+#pragma once
+
+#include "IPlug_include_in_plug_hdr.h"
+#include <atomic>
+#include <vector>
+
+#include "IControls.h"
+#include "MidiQueueCompat.h"
+
+const int kNumPresets = 1;
+
+// === ПАРАМЕТРЫ ===
+enum EParams
+{
+	kParamKick = 0, // 0..1 — нормализованное значение слайдера MIXER (громкость кика)
+	kParamSnare,    // 0..1 — нормализованное значение слайдера MIXER (громкость снейра)
+	kParamTom1,
+	kParamTom2,
+	kParamTom3,
+	// NEW
+	kParamCymbals,  // управляет "crash"
+	kParamRooms,    // управляет "snare_room" и "tom_room"
+	// NEW — MASTER
+	kParamMaster,
+	kNumParams
+};
+
+// === ТЭГИ КОНТРОЛОВ ===
+enum ECtrlTags {
+	kCtrlTagSlider = 0,
+	kCtrlTagTitle = 1,
+	kCtrlTagHello = 2,
+	kCtrlTagVersionNumber = 3,
+	kCtrlTagKnob = 4,
+	kCtrlTagImageButton = 5,
+	kCtrlTagBgImage = 6,
+	kCtrlTagFgImage = 7,
+	kCtrlTagKeyboard = 8,
+	kCtrlTagDrumPad = 9,
+	kCtrlTagKickButton = 10,
+	kCtrlTagSnareButton = 11,
+	kCtrlTagTomButton = 12,
+	kCtrlTagCrashLButton = 13,
+	kCtrlTagMenuButton = 14,
+	kCtrlTagMappingImage = 15,
+	kCtrlTagResizeRight = 16,
+	kCtrlTagResizeBottom = 17,
+	kCtrlTagMappingOverlay = 18,
+	kCtrlTagCrashRButton = 19,
+
+	// MIXER (kick)
+	kCtrlTagMixerSlider = 20,
+	kCtrlTagKickMeter = 21,
+	kCtrlTagMeter = 22,             // использовался как "kick meter"
+	kCtrlTagKickValueText = 23,
+	kCtrlTagClickCatcher = 24,
+	kCtrlTagKickEditBG = 25,
+
+	// MIXER (snare)
+	kCtrlTagSnareSlider = 26,
+	kCtrlTagSnareValueText = 27,
+	kCtrlTagSnareMeter = 28,
+
+	// MIXER (toms)
+	kCtrlTagTom1Slider = 29,
+	kCtrlTagTom1ValueText = 30,
+	kCtrlTagTom1Meter = 31,
+
+	kCtrlTagTom2Slider = 32,
+	kCtrlTagTom2ValueText = 33,
+	kCtrlTagTom2Meter = 34,
+
+	kCtrlTagTom3Slider = 35,
+	kCtrlTagTom3ValueText = 36,
+	kCtrlTagTom3Meter = 37,
+
+	// NEW — CYMBALS & ROOMS
+	kCtrlTagCymbalsSlider = 38,
+	kCtrlTagCymbalsValueText = 39,
+	kCtrlTagCymbalsMeter = 40,
+
+	kCtrlTagRoomsSlider = 41,
+	kCtrlTagRoomsValueText = 42,
+	kCtrlTagRoomsMeter = 43,
+
+	// NEW — MASTER
+	kCtrlTagMasterSlider = 44,
+	kCtrlTagMasterValueText = 45,
+	kCtrlTagMasterMeter = 46,
+
+	kCtrlTagKeyboardOverlay = 47,
+
+	kCtrlTagKickOverlay = 48,
+	kCtrlTagSnareOverlay = 49,
+	kCtrlTagCrashLOverlay = 50,
+	kCtrlTagCrashROverlay = 51,
+
+	// NEW — TOM 3 OVERLAY
+	kCtrlTagTom3Overlay = 52,
+	kCtrlTagTom2Overlay = 53,
+	kCtrlTagTom1Overlay = 54,
+
+	kCtrlTagPadChinaButton = 55,
+	kCtrlTagPadCrashRButton = 56,
+	kCtrlTagPadHHOpenButton = 57,
+	kCtrlTagPadRackTom1Button = 58,
+	kCtrlTagPadRackTom2Button = 59,
+	kCtrlTagPadSplashButton = 60,
+	kCtrlTagPadRideButton = 61,
+
+};
+
+enum EMsgTags
+{
+	kMsgTagPadTrigger = 0,
+	kMsgTagNotePulse = 1
+};
+
+using namespace iplug;
+using namespace igraphics;
+
+class TemplateProject final : public Plugin
+{
+public:
+	TemplateProject(const InstanceInfo& info);
+
+#if IPLUG_EDITOR
+	void OnParentWindowResize(int width, int height) override;
+	bool OnHostRequestingSupportedViewConfiguration(int width, int height) override { return true; }
+#endif
+
+	void OnParamChange(int paramIdx) override;
+
+#if IPLUG_DSP
+	void OnReset() override;
+	void ProcessMidiMsg(const IMidiMsg& msg) override;
+	void ProcessBlock(sample** inputs, sample** outputs, int nFrames) override;
+	void OnIdle() override;
+
+#endif
+
+private:
+	void StartOneShot() { mPadStart.store(true, std::memory_order_relaxed); }
+	MidiQueueCompat mMidiQueue;
+
+#if IPLUG_DSP
+	// Метринг
+	IPeakAvgSender<2> mMeterSender;       // kick
+	IPeakAvgSender<2> mSnareMeterSender;  // snare
+
+	// Тома
+	IPeakAvgSender<2> mTom1MeterSender;
+	IPeakAvgSender<2> mTom2MeterSender;
+	IPeakAvgSender<2> mTom3MeterSender;
+
+	// NEW — метеры
+	IPeakAvgSender<2> mCymbalsMeterSender; // crash
+	IPeakAvgSender<2> mRoomsMeterSender;   // snare_room + tom_room (суммарно)
+	IPeakAvgSender<2> mMasterMeterSender;  // NEW — master (сумма всего)
+	std::vector<sample> mMonoBuf;
+#endif
+
+private:
+	// Данные сэмпла (по каналам)
+	std::vector<float> mL, mR;
+	int    mFileSR = 0;
+	double mReadPos = -1.0; // <0 = не играет
+	double mIncr = 1.0;     // шаг чтения (ratio SR)
+	std::atomic<bool> mPadStart{ false };
+	std::vector<sample> mTmpL, mTmpR;
+
+#if IPLUG_DSP
+	// Tap-буферы
+	std::vector<sample> mKickL, mKickR;
+	std::vector<sample> mSnareL, mSnareR;
+
+	// Тома taps
+	std::vector<sample> mTom1L, mTom1R;
+	std::vector<sample> mTom2L, mTom2R;
+	std::vector<sample> mTom3L, mTom3R;
+
+	// NEW — taps для crash и rooms
+	std::vector<sample> mCrashL, mCrashR;
+	std::vector<sample> mSnareRoomL, mSnareRoomR;
+	std::vector<sample> mTomRoomL, mTomRoomR;
+	std::vector<sample> mKickRoomL, mKickRoomR;
+	std::vector<sample> mRackTom1RoomL, mRackTom1RoomR;
+	std::vector<sample> mRackTom2RoomL, mRackTom2RoomR;
+	std::vector<sample> mCrashRRoomL, mCrashRRoomR;
+	std::vector<sample> mCrashLRoomL, mCrashLRoomR;
+#endif
+
+	// NEW — мастер-гейн, читается на аудиопотоке
+	std::atomic<float> mMasterGain{ 1.f };
+};

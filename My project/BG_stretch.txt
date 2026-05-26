@@ -1,0 +1,545 @@
+// TemplateProject.cpp
+// Кнопка-спрайт (верхний кадр = normal, нижний кадр = down), без двойного нажатия.
+
+#include "TemplateProject.h"
+#include "IPlug_include_in_plug_src.h"
+
+#include "AudioFile.h"
+
+#include <atomic>
+#include <vector>
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <array>
+#include <cmath>
+#include <cstdlib>
+
+#if IPLUG_EDITOR
+#include "IControls.h"
+#endif
+
+// ----------------------------------
+static constexpr int kKickNote = 36; // C2
+static constexpr int kSnareNote = 38; // D2
+static constexpr int kTomNote = 41; // F2
+static constexpr int kCrashNote = 49; // C#3
+
+// Пути к wav (замените под себя)
+static const char* kKickPath =
+#if defined(OS_WIN)
+"e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/Kick_Close.wav";
+#endif
+
+static const char* kSnarePath =
+#if defined(OS_WIN)
+"e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/Snare_Close.wav";
+#endif
+
+static const char* kSnareRoomPath =
+#if defined(OS_WIN)
+"e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/Snare_Room.wav";
+#endif
+
+static const char* kCrashPath =
+#if defined(OS_WIN)
+"e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/CrashL_Close.wav";
+#endif
+
+static const char* kTomPath =
+#if defined(OS_WIN)
+"e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/FloorTom_Close.wav";
+#endif
+
+static const char* kTomRoomPath =
+#if defined(OS_WIN)
+"e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/FloorTom_Room.wav";
+#endif
+
+// ----------------------------------
+namespace {
+
+    using SampleT = float;
+    using HostSample = sample;
+
+    struct OneShotPlayer
+    {
+        void SetSample(const AudioFile<SampleT>& af)
+        {
+            mSrcSR = af.getSampleRate();
+            mNumCh = af.getNumChannels();
+            const int N = af.getNumSamplesPerChannel();
+
+            mBuf.assign(mNumCh, {});
+            for (int ch = 0; ch < mNumCh; ++ch)
+            {
+                mBuf[ch].resize(N);
+                std::copy(af.samples[ch].begin(), af.samples[ch].end(), mBuf[ch].begin());
+            }
+            mLen = N;
+        }
+
+        void Prepare(double hostSR)
+        {
+            mHostSR = hostSR;
+            mStep = (mSrcSR > 0 ? (double)mSrcSR / mHostSR : 1.0);
+        }
+
+        void Trigger()
+        {
+            mPos.store(0.0, std::memory_order_release);
+            mPlaying.store(true, std::memory_order_release);
+        }
+
+        void Process(HostSample** outputs, int nOutChans, int nFrames, float gain = 1.0f)
+        {
+            if (!mPlaying.load(std::memory_order_acquire) || mBuf.empty()) return;
+
+            for (int i = 0; i < nFrames; ++i)
+            {
+                double pos = mPos.load(std::memory_order_relaxed);
+                if (pos >= (double)(mLen - 1))
+                {
+                    mPlaying.store(false, std::memory_order_release);
+                    break;
+                }
+
+                const size_t i0 = (size_t)pos;
+                const double frac = pos - (double)i0;
+
+                for (int outCh = 0; outCh < nOutChans; ++outCh)
+                {
+                    const int srcCh = (mNumCh == 1 ? 0 : (outCh < mNumCh ? outCh : 0));
+                    const SampleT s0 = mBuf[srcCh][i0];
+                    const SampleT s1 = mBuf[srcCh][i0 + 1];
+                    const float s = (float)((1.0 - frac) * s0 + frac * s1) * gain;
+                    outputs[outCh][i] += (HostSample)s;
+                }
+
+                pos += mStep;
+                mPos.store(pos, std::memory_order_relaxed);
+            }
+        }
+
+    private:
+        std::vector<std::vector<SampleT>> mBuf;
+        std::atomic<bool>   mPlaying{ false };
+        std::atomic<double> mPos{ 0.0 };
+        int     mNumCh = 0;
+        int     mLen = 0;
+        int     mSrcSR = 0;
+        double  mHostSR = 0.0;
+        double  mStep = 1.0;
+    };
+
+    struct DrumKit
+    {
+        struct Entry {
+            int note = 0;
+            std::string path;
+            std::string tag;
+            std::unique_ptr<AudioFile<SampleT>> file;
+            std::unique_ptr<OneShotPlayer> player;
+            std::atomic<float> gain{ 1.0f };
+        };
+
+        void Add(int note, const char* path, const char* tag)
+        {
+            auto e = std::make_unique<Entry>();
+            e->note = note;
+            e->path = path;
+            e->tag = tag ? tag : "";
+            e->file = std::make_unique<AudioFile<SampleT>>();
+            e->player = std::make_unique<OneShotPlayer>();
+
+            if (e->file->load(path) && e->file->getNumChannels() > 0 && e->file->getNumSamplesPerChannel() > 1)
+            {
+                e->player->SetSample(*e->file);
+                mEntries.push_back(std::move(e));
+            }
+            else
+            {
+                DBGMSG("Failed to load sample: %s\n", path);
+            }
+        }
+
+        void Prepare(double hostSR)
+        {
+            for (auto& e : mEntries)
+                e->player->Prepare(hostSR);
+        }
+
+        void Trigger(int note)
+        {
+            for (auto& e : mEntries)
+                if (e->note == note)
+                    e->player->Trigger();
+        }
+
+        void SetGainTag(const char* tag, float g)
+        {
+            const float gg = std::clamp(g, 0.0f, 1.0f);
+            for (auto& e : mEntries)
+                if (e->tag == tag)
+                    e->gain.store(gg, std::memory_order_release);
+        }
+
+        void Process(HostSample** outputs, int nOutChans, int nFrames)
+        {
+            for (auto& e : mEntries)
+                e->player->Process(outputs, nOutChans, nFrames, e->gain.load(std::memory_order_acquire));
+        }
+
+    private:
+        std::vector<std::unique_ptr<Entry>> mEntries;
+    };
+
+    static DrumKit gKit;
+
+} // namespace
+
+// ----------------------------------
+#if IPLUG_EDITOR
+
+static IVStyle CreatePadStyle()
+{
+    return IVStyle{
+      true, true,
+      {
+        COLOR_TRANSPARENT, COLOR_MID_GRAY, COLOR_LIGHT_GRAY, COLOR_DARK_GRAY,
+        COLOR_TRANSLUCENT, IColor(60, 0, 0, 0), COLOR_BLACK, COLOR_GREEN, COLOR_BLUE
+      },
+      IText(19.0, COLOR_BLACK, "Roboto-Regular", EAlign::Center, EVAlign::Top, 0.0),
+      IText(14.0, COLOR_BLACK, "Roboto-Regular", EAlign::Center, EVAlign::Bottom, 0.0),
+      true, true, true, false, 0.0, 1.0, 3.0, 1.0, 0.0
+    };
+}
+
+static void CreateDrumPads(IGraphics* pGraphics, const IVStyle& padStyle)
+{
+    // Kick
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(80.0, 90.0, 130.0, 230.0),
+            kNoParameter, "Kick", padStyle, false,
+            EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        gKit.SetGainTag("kick", 1.0f);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("kick", (float)cc->GetValue()); });
+    }
+
+    // Snare
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(130.0, 90.0, 180.0, 230.0),
+            kNoParameter, "Snare", padStyle, false,
+            EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("snare_close", (float)cc->GetValue()); });
+    }
+
+    // Crash
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(180.0, 90.0, 230.0, 230.0),
+            kNoParameter, "Crash", padStyle, false,
+            EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("crash", (float)cc->GetValue()); });
+    }
+
+    // Snare Room
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(230.0, 90.0, 280.0, 230.0),
+            kNoParameter, "Snare Room", padStyle, false,
+            EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("snare_room", (float)cc->GetValue()); });
+    }
+
+    // Tom
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(280.0, 90.0, 330.0, 230.0),
+            kNoParameter, "Tom", padStyle, false,
+            EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("tom_close", (float)cc->GetValue()); });
+    }
+
+    // Tom Room
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(330.0, 90.0, 380.0, 230.0),
+            kNoParameter, "Tom Room", padStyle, false,
+            EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("tom_room", (float)cc->GetValue()); });
+    }
+}
+
+// >>> Кнопка-спрайт кика: верхний кадр = normal, нижний кадр = pressed.
+//     Плюс защита от двойного клика (даблклик) и повторного нажатия.
+// Центрирование и масштаб под mRECT с учётом draw scale.
+// 2 кадра вертикально: 1 = верх (normal), 2 = низ (pressed).
+// Кнопка
+class KickPadButton final : public IControl
+{
+public:
+    KickPadButton(const IRECT& bounds, const IBitmap& pressedBmp, int midiNote, TemplateProject& plug)
+        : IControl(bounds), mPressedBmp(pressedBmp), mNote(midiNote), mPlug(plug)
+    {
+        SetTooltip("Kick");
+        SetActionFunction([](IControl* p) { SplashClickActionFunc(p); });
+    }
+
+    void Draw(IGraphics& g) override
+    {
+        if (GetValue() <= 0.5) // нормальное состояние — прозрачная
+            return;
+
+        if (mPressedBmp.GetAPIBitmap())
+            g.DrawFittedBitmap(mPressedBmp, mRECT.GetPixelAligned()); // картинка вписывается под размер пада
+    }
+
+    void OnMouseDown(float, float, const IMouseMod&) override
+    {
+        if (mHeld) return;
+        mHeld = true;
+        SetValue(1.0); SetDirty(false);
+        IMidiMsg m; m.MakeNoteOnMsg(mNote, 127, 0); mPlug.SendMidiMsgFromUI(m);
+    }
+
+    void OnMouseUp(float, float, const IMouseMod&) override
+    {
+        if (!mHeld) return;
+        mHeld = false;
+        SetValue(0.0); SetDirty(false);
+        IMidiMsg m; m.MakeNoteOffMsg(mNote, 0); mPlug.SendMidiMsgFromUI(m);
+    }
+
+    void OnMsgFromDelegate(int msgTag, int, const void*) override
+    {
+        if (msgTag == kMsgTagNotePulse)
+        {
+            SetAnimation([this](IControl* c) {
+                const double t = c->GetAnimationProgress();
+                c->SetValue(t < 0.5 ? 1.0 : 0.0);
+                if (t >= 1.0) c->OnEndAnimation();
+                }, 80);
+        }
+    }
+
+private:
+    IBitmap mPressedBmp;
+    int mNote = 36;
+    bool mHeld = false;
+    TemplateProject& mPlug;
+};
+
+
+
+static void SetupQwertyKeyboard(IGraphics* pGraphics, int kMinNote, int kMaxNote, TemplateProject* plugin)
+{
+    constexpr int kQwertyStartBase = 36; // C2
+    auto qwertyBase = std::make_shared<int>(kQwertyStartBase);
+    auto held = std::make_shared<std::array<bool, 128>>();
+    held->fill(false);
+
+    pGraphics->SetKeyHandlerFunc([pGraphics, qwertyBase, held, kMinNote, kMaxNote, plugin](const IKeyPress& key, bool isUp) -> bool
+        {
+            auto clampPitch = [&](int p) { return std::clamp(p, kMinNote, kMaxNote); };
+
+            auto send = [&](int pitch, bool on)
+                {
+                    pitch = clampPitch(pitch);
+                    if (on)
+                    {
+                        if ((*held)[pitch]) return;
+                        (*held)[pitch] = true;
+                        IMidiMsg m; m.MakeNoteOnMsg(pitch, 127, 0);
+                        plugin->SendMidiMsgFromUI(m);
+                        if (auto* c = pGraphics->GetControlWithTag(kCtrlTagKeyboard))
+                            c->As<IVKeyboardControl>()->SetNoteFromMidi(pitch, true);
+                    }
+                    else
+                    {
+                        if (!(*held)[pitch]) return;
+                        (*held)[pitch] = false;
+                        IMidiMsg m; m.MakeNoteOffMsg(pitch, 0);
+                        plugin->SendMidiMsgFromUI(m);
+                        if (auto* c = pGraphics->GetControlWithTag(kCtrlTagKeyboard))
+                            c->As<IVKeyboardControl>()->SetNoteFromMidi(pitch, false);
+                    }
+                };
+
+            if (isUp)
+            {
+                if (key.VK == kVK_Z) { *qwertyBase = std::max(kMinNote, *qwertyBase - 12); return true; }
+                if (key.VK == kVK_X) { *qwertyBase = std::min(kMaxNote - 14, *qwertyBase + 12); return true; }
+            }
+
+            int off = -999;
+            switch (key.VK) {
+            case kVK_A: off = 0; break;   case kVK_W: off = 1; break;   case kVK_S: off = 2; break;
+            case kVK_E: off = 3; break;   case kVK_D: off = 4; break;   case kVK_F: off = 5; break;
+            case kVK_T: off = 6; break;   case kVK_G: off = 7; break;   case kVK_Y: off = 8; break;
+            case kVK_H: off = 9; break;   case kVK_U: off = 10; break;  case kVK_J: off = 11; break;
+            case kVK_K: off = 12; break;  case kVK_O: off = 13; break;  case kVK_L: off = 14; break;
+            default: return false;
+            }
+
+            const int pitch = *qwertyBase + off;
+            send(pitch, !isUp);
+            return true;
+        });
+}
+
+#endif // IPLUG_EDITOR
+
+// ----------------------------------
+TemplateProject::TemplateProject(const InstanceInfo& info)
+    : iplug::Plugin(info, MakeConfig(kNumParams, kNumPresets))
+{
+    GetParam(kParamGain)->InitDouble("Gain", 0., 0., 100.0, 0.01, "%");
+
+    gKit.Add(kKickNote, kKickPath, "kick");
+    gKit.Add(kSnareNote, kSnarePath, "snare_close");
+    gKit.Add(kSnareNote, kSnareRoomPath, "snare_room");
+    gKit.Add(kTomNote, kTomPath, "tom_close");
+    gKit.Add(kTomNote, kTomRoomPath, "tom_room");
+    gKit.Add(kCrashNote, kCrashPath, "crash");
+
+#if IPLUG_EDITOR
+    mMakeGraphicsFunc = [&]() {
+        return MakeGraphics(*this, PLUG_WIDTH, PLUG_HEIGHT, PLUG_FPS,
+            GetScaleForScreen(PLUG_WIDTH, PLUG_HEIGHT));
+        };
+
+    mLayoutFunc = [&](IGraphics* pGraphics)
+        {
+            // базовые UI
+            pGraphics->AttachCornerResizer(EUIResizerMode::Size, false);
+            pGraphics->AttachPanelBackground(COLOR_BLACK);
+            pGraphics->LoadFont("Roboto-Regular", ROBOTO_FN);
+
+            const IVStyle padStyle = CreatePadStyle();
+
+            const IRECT bounds = pGraphics->GetBounds();
+            const IRECT innerBounds = bounds;
+            const IRECT bottomRow = innerBounds.GetFromBottom(140);
+            const IRECT keyboardBounds = bottomRow;
+            const IRECT sliderBounds = innerBounds.GetFromLeft(150).GetMidVPadded(100);
+            const IRECT versionBounds = innerBounds.GetFromTRHC(300, 20);
+            const IRECT titleBounds = innerBounds.GetCentredInside(200, 50);
+            const IRECT helloBounds = innerBounds.GetCentredInside(200, 30).GetVShifted(40);
+            const IRECT knobBounds = bounds.GetCentredInside(120).GetVShifted(-100);
+
+            // фон
+            const IBitmap bgBmp = pGraphics->LoadBitmap(IMG_BUTTON_FN, 1);
+            static float kaef = 0.75f;
+            static float gBoxW = 3840.f * kaef, gBoxH = 2160.f * kaef;
+
+            pGraphics->AttachControl(new ILambdaControl(pGraphics->GetBounds(),
+                [bgBmp](ILambdaControl* c, IGraphics& g, IRECT&)
+                {
+                    if (!bgBmp.GetAPIBitmap()) return;
+                    const IRECT win = g.GetBounds();
+                    if (c->GetRECT() != win)
+                        c->SetTargetAndDrawRECTs(win);
+                    g.FillRect(COLOR_BLACK, win);
+                    const IRECT box = win.GetCentredInside(gBoxW, gBoxH).GetPixelAligned().GetVShifted(25).GetHShifted(50);
+                    g.DrawFittedBitmap(bgBmp, box);
+                }
+            ), kCtrlTagBgImage)->SetIgnoreMouse(true);
+
+            // пэды-громкости
+            CreateDrumPads(pGraphics, padStyle);
+
+            // клавиатура
+            const int kMinNote = 24;
+            const int kMaxNote = 72;
+            auto* pKB = pGraphics->AttachControl(new IVKeyboardControl(keyboardBounds, kMinNote, kMaxNote), kCtrlTagKeyboard);
+            pKB->Hide(false);
+
+            // QWERTY
+            SetupQwertyKeyboard(pGraphics, kMinNote, kMaxNote, this);
+
+            // прочее
+            pGraphics->AttachControl(new IVSliderControl(sliderBounds, kParamGain), kCtrlTagSlider);
+            pGraphics->AttachControl(new IVKnobControl(knobBounds, kParamGain), kCtrlTagKnob);
+            pGraphics->AttachControl(new ITextControl(titleBounds, "TemplateProject", IText(30)), kCtrlTagTitle);
+            pGraphics->AttachControl(new ITextControl(helloBounds, "Привет!", IText(24, COLOR_BLACK)), kCtrlTagHello);
+
+            WDL_String buildInfoStr;
+            GetBuildInfoStr(buildInfoStr, __DATE__, __TIME__);
+            pGraphics->AttachControl(new ITextControl(versionBounds, buildInfoStr.Get(),
+                DEFAULT_TEXT.WithAlign(EAlign::Far)), kCtrlTagVersionNumber);
+
+            // >>> КНОПКА-КИК (responsive)
+            const IBitmap kickPressedBmp = pGraphics->LoadBitmap(KICK_UP_FN, 1);
+
+            // размеры окна
+            const IRECT win = pGraphics->GetBounds();
+
+            // размер кнопки: 12% от минимальной стороны окна
+            const float padSize = std::round(std::min(win.W(), win.H()) * 0.12f);
+
+            // позиция: 10% от левой границы, 58% от верхней (можно менять проценты под ваш макет)
+            const float px = win.L + win.W() * 0.10f;
+            const float py = win.T + win.H() * 0.58f;
+
+            const IRECT kickBtnRect = IRECT::MakeXYWH(px, py, padSize, padSize).GetPixelAligned();
+
+            pGraphics->AttachControl(new KickPadButton(kickBtnRect, kickPressedBmp, kKickNote, *this),
+                kCtrlTagKickButton);
+
+        };
+#endif // IPLUG_EDITOR
+}
+
+// ----------------------------------
+#if IPLUG_EDITOR
+void TemplateProject::OnParentWindowResize(int width, int height)
+{
+    if (GetUI())
+        GetUI()->Resize(width, height, 1.f, false);
+}
+#endif
+
+// ----------------------------------
+#if IPLUG_DSP
+
+void TemplateProject::OnReset()
+{
+    gKit.Prepare(GetSampleRate());
+}
+
+void TemplateProject::ProcessMidiMsg(const IMidiMsg& msg)
+{
+    if (msg.StatusMsg() == IMidiMsg::kNoteOn && msg.Velocity() > 0)
+    {
+        gKit.Trigger(msg.NoteNumber());
+
+        if (msg.NoteNumber() == kKickNote)
+        {
+            // Пульс визуального нажатия при проигрывании кика из хоста
+            SendControlMsgFromDelegate(kCtrlTagKickButton, kMsgTagNotePulse, 0, nullptr);
+        }
+    }
+}
+
+void TemplateProject::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
+{
+    const int nChans = NOutChansConnected();
+    const double gain = GetParam(kParamGain)->Value() / 100.0;
+
+    for (int s = 0; s < nFrames; ++s)
+        for (int c = 0; c < nChans; ++c)
+            outputs[c][s] = inputs[c][s] * gain;
+
+    gKit.Process(outputs, nChans, nFrames);
+}
+
+#endif // IPLUG_DSP

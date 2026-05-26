@@ -1,0 +1,3100 @@
+// TemplateProject.cpp
+// Три независимые меню-кнопки (левая/центральная/правая).
+// Каждая рисует один и тот же bitmap в off/on, имеет СВОЙ размер/позицию
+// и управляет СВОИМ оверлеем (картинка/позиция/размер — независимы).
+
+#include "TemplateProject.h"
+#include "IPlug_include_in_plug_src.h"
+#include "AudioFile.h"
+#include <atomic>
+#include <vector>
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <cctype> // для isspace/isalpa/tolower
+
+#if IPLUG_EDITOR
+#include "IControls.h"
+#include "MidiQueueCompat.h"
+#include "SsdzReader.h"
+
+#include <cstdint>
+#include <cstring>
+// KICK & SNARE 
+#include "Kick_Close.h"
+#include "Snare_Close.h"
+// TOMS
+#include "RackTom1_Close.h"
+#include "RackTom2_Close.h"
+#include "FloorTom_Close.h"
+// CYMBALS
+#include "CrashL_Close.h"
+#include "CrashR_Close.h"
+// ROOMS
+#include "Kick_Room.h"
+#include "Snare_Room.h"
+#include "FloorTom_Room.h"
+#include "RackTom1_Room.h"
+#include "RackTom2_Room.h"
+#include "CrashL_Room.h"
+#include "CrashR_Room.h"
+
+#endif
+
+
+
+//======================================================================
+// 0) ДЕШИФРАТОР
+//======================================================================
+
+namespace {
+
+    // читаем файл целиком
+    static std::vector<uint8_t> ReadAll(const char* path) {
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs) throw std::runtime_error("can't open: " + std::string(path));
+        return std::vector<uint8_t>(std::istreambuf_iterator<char>(ifs), {});
+    }
+
+    // грубый, но быстрый парсер первого массива { ... } из .h/.cpp, сгенерированного bin2c
+    static bool ExtractBin2CBytes(const uint8_t* txt, size_t len, std::vector<uint8_t>& out)
+    {
+        out.clear();
+        if (!txt || !len) return false;
+
+        // убираем /*...*/ и //...
+        std::string s(reinterpret_cast<const char*>(txt), len);
+        for (size_t p = 0;;) { size_t a = s.find("/*", p); if (a == std::string::npos) break; size_t b = s.find("*/", a + 2); s.erase(a, (b == std::string::npos) ? std::string::npos : b - a + 2); p = a; }
+        for (size_t p = 0;;) { size_t a = s.find("//", p); if (a == std::string::npos) break; size_t e = s.find('\n', a + 2); s.erase(a, (e == std::string::npos) ? std::string::npos : e - a); p = a; }
+
+        // { ... }
+        size_t lb = s.find('{'); if (lb == std::string::npos) return false;
+        size_t rb = s.find('}', lb + 1); if (rb == std::string::npos) return false;
+        std::string body = s.substr(lb + 1, rb - lb - 1);
+
+        const char* p = body.c_str(); const char* end = p + body.size();
+        auto ws = [&](const char*& q) { while (q < end && (unsigned char)*q <= 32) ++q; };
+        auto ishex = [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); };
+
+        while (p < end) {
+            ws(p); if (p >= end) break;
+            if (*p == ',') { ++p; continue; }
+            if ((end - p) >= 3 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X') && ishex(p[2])) {
+                p += 2; unsigned v = 0; while (p < end && ishex(*p)) { char c = *p++; v <<= 4; v += (c >= '0' && c <= '9') ? (c - '0') : (c >= 'a' && c <= 'f') ? (c - 'a' + 10) : (c - 'A' + 10); }
+                if (v > 255) return false; out.push_back((uint8_t)v); continue;
+            }
+            if (*p >= '0' && *p <= '9') {
+                unsigned v = 0; while (p < end && *p >= '0' && *p <= '9') { v = v * 10 + unsigned(*p - '0'); ++p; }
+                if (v > 255) return false; out.push_back((uint8_t)v); continue;
+            }
+            ++p; // прочее — пропускаем
+        }
+        return !out.empty();
+    }
+
+    // загружаем и парсим контейнер с диска
+    struct PackedHeaders {
+        SsdArchive archive;
+        bool ok = false;
+    };
+
+    static PackedHeaders LoadPackFromPath(const char* packPath)
+    {
+        PackedHeaders ph;
+        if (sodium_init() < 0) { DBGMSG("libsodium init failed\n"); return ph; }
+
+        std::vector<uint8_t> ssdz, ssd;
+        try {
+            ssdz = ReadAll(packPath);
+        }
+        catch (const std::exception& e) {
+            DBGMSG("read pack failed: %s\n", e.what());
+            return ph;
+        }
+        try {
+            ssd = DecryptSSDZ(ssdz.data(), ssdz.size());
+        }
+        catch (const std::exception& e) {
+            DBGMSG("DecryptSSDZ failed: %s\n", e.what());
+            return ph;
+        }
+        try {
+            ph.archive.LoadSSD(ssd.data(), ssd.size());
+            ph.ok = true;
+            DBGMSG("Pack OK, files: %d\n", (int)ph.archive.Count());
+        }
+        catch (const std::exception& e) {
+            DBGMSG("LoadSSD failed: %s\n", e.what());
+        }
+        return ph;
+    }
+
+} // namespace
+
+
+//======================================================================
+// 1) ГЛОБАЛЬНЫЕ КОНСТАНТЫ/АЛИАСЫ
+//======================================================================
+namespace {
+    using SampleT = float;    // тип сэмпла в файле
+    using HostSample = sample;// тип сэмпла хоста (iPlug)
+}
+
+// MIDI-ноты
+static constexpr int kKickNote = 36;  // C2
+static constexpr int kSnareNote = 38; // D2
+
+// Тома
+static constexpr int kTom3Note = 43; // G2 — Floor Tom
+static constexpr int kTom2Note = 48; // C3 — Rack Tom 2
+static constexpr int kTom1Note = 50; // D3 — Rack Tom 1
+
+// Цимбал
+static constexpr int kCrashLNote = 57; // C#3
+static constexpr int kCrashRNote = 49; // C#3
+
+
+//======================================================================
+// 1.1) МАППИНГ v (0..1) ↔ gain
+//======================================================================
+namespace {
+    constexpr double kKickUnityAt = 0.75;
+    constexpr double kKickMaxGain = 1.5;
+    constexpr double kMinGain = 1e-6;
+
+    inline double GainFromV(double v) {
+        v = std::clamp(v, 0.0, 1.0);
+        if (v <= kKickUnityAt)
+            return (kKickUnityAt > 0.0 ? v / kKickUnityAt : 1.0);
+        else
+            return 1.0 + (v - kKickUnityAt) / (1.0 - kKickUnityAt) * (kKickMaxGain - 1.0);
+    }
+
+    inline double VFromGain(double g) {
+        g = std::clamp(g, 0.0, kKickMaxGain);
+        if (g <= 1.0)
+            return g * kKickUnityAt;
+        else
+            return kKickUnityAt + (1.0 - kKickUnityAt) * (g - 1.0) / (kKickMaxGain - 1.0);
+    }
+}
+
+//======================================================================
+/* 1.2) ФОРМАТИРОВАНИЕ dB С -inf НИЖЕ ПОРОГА */
+namespace {
+    constexpr double kNegInfThresholdDB = -60.0;
+
+    static inline void FormatDBString(WDL_String& s, double dB)
+    {
+        if (dB <= kNegInfThresholdDB)
+            s.Set("-inf");
+        else if (std::fabs(dB) < 0.05)
+            s.Set("0.0 dB");
+        else
+            s.SetFormatted(16, "%+.1f dB", dB);
+    }
+}
+
+//======================================================================
+// 2) АУДИО ДВИЖОК: OneShotPlayer и DrumKit
+//======================================================================
+namespace {
+
+    // ---- WAV loader from memory (PCM16 / IEEE float32) ----
+    static bool LoadWavFromMemory(const uint8_t* data, size_t size, AudioFile<float>& out)
+    {
+        auto rdU32 = [&](size_t off)->uint32_t { if (off + 4 > size) return 0; uint32_t v; std::memcpy(&v, data + off, 4); return v; };
+        auto rdU16 = [&](size_t off)->uint16_t { if (off + 2 > size) return 0; uint16_t v; std::memcpy(&v, data + off, 2); return v; };
+        auto rdTag = [&](size_t off)->uint32_t { return rdU32(off); }; // 'RIFF','WAVE','fmt ','data'
+
+        if (size < 44) { DBGMSG("WAV too small\n"); return false; }
+        if (rdTag(0) != 0x46464952 /*RIFF*/ || rdTag(8) != 0x45564157 /*WAVE*/) { DBGMSG("Not RIFF/WAVE\n"); return false; }
+
+        size_t p = 12; // after RIFF+size+WAVE
+        int format = 0;           // 1=PCM, 3=IEEE float
+        int numChans = 0;
+        int sampleRate = 0;
+        int bitsPerSample = 0;
+        size_t dataOff = 0, dataSize = 0;
+
+        while (p + 8 <= size)
+        {
+            uint32_t tag = rdTag(p);
+            uint32_t sz = rdU32(p + 4);
+            size_t next = p + 8 + sz + (sz & 1);
+
+            if (tag == 0x20746d66 /*"fmt "*/)
+            {
+                if (p + 8 + 16 > size) { DBGMSG("fmt too small\n"); return false; }
+                format = rdU16(p + 8 + 0);
+                numChans = rdU16(p + 8 + 2);
+                sampleRate = (int)rdU32(p + 8 + 4);
+                /* avgBps   = */      rdU32(p + 8 + 8);
+                /* blockAl  = */      rdU16(p + 8 + 12);
+                bitsPerSample = rdU16(p + 8 + 14);
+                // если есть extra bytes (sz > 16) — просто пропускаем
+            }
+            else if (tag == 0x61746164 /*"data"*/)
+            {
+                dataOff = p + 8;
+                dataSize = sz;
+            }
+            p = next;
+        }
+
+        if (!(format == 1 || format == 3)) { DBGMSG("Unsupported format tag=%d\n", format); return false; }
+        if (numChans <= 0 || sampleRate <= 0 || dataOff == 0 || dataSize == 0) { DBGMSG("Bad header\n"); return false; }
+
+        size_t bytesPerSample = (size_t)(bitsPerSample / 8);
+        size_t frameSizeBytes = bytesPerSample * (size_t)numChans;
+        if (frameSizeBytes == 0) { DBGMSG("Bad frame size\n"); return false; }
+
+        size_t numFrames = dataSize / frameSizeBytes;
+
+        out.setSampleRate(sampleRate);
+        out.setBitDepth(32);
+        out.setNumChannels(numChans);
+        out.setNumSamplesPerChannel((int)numFrames);
+
+        const uint8_t* pcm = data + dataOff;
+
+        auto readPCM24 = [&](const uint8_t* b)->int32_t {
+            // little-endian 24-bit -> sign-extend to 32-bit
+            int32_t v = (int32_t)((uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16));
+            v = (v << 8) >> 8; // sign extend 24->32
+            return v;
+            };
+
+        if (format == 1) // PCM integer
+        {
+            if (bitsPerSample == 16)
+            {
+                for (size_t f = 0; f < numFrames; ++f) {
+                    const int16_t* frm = reinterpret_cast<const int16_t*>(pcm + f * frameSizeBytes);
+                    for (int ch = 0; ch < numChans; ++ch)
+                        out.samples[ch][(int)f] = (float)frm[ch] / 32768.f;
+                }
+            }
+            else if (bitsPerSample == 24)
+            {
+                for (size_t f = 0; f < numFrames; ++f) {
+                    const uint8_t* frm = pcm + f * frameSizeBytes;
+                    for (int ch = 0; ch < numChans; ++ch) {
+                        const uint8_t* s = frm + ch * 3;
+                        float x = (float)readPCM24(s) / 8388608.f; // 2^23
+                        out.samples[ch][(int)f] = x;
+                    }
+                }
+            }
+            else if (bitsPerSample == 32)
+            {
+                for (size_t f = 0; f < numFrames; ++f) {
+                    const int32_t* frm = reinterpret_cast<const int32_t*>(pcm + f * frameSizeBytes);
+                    for (int ch = 0; ch < numChans; ++ch)
+                        out.samples[ch][(int)f] = (float)((double)frm[ch] / 2147483648.0); // 2^31
+                }
+            }
+            else {
+                DBGMSG("Unsupported PCM bits=%d\n", bitsPerSample);
+                return false;
+            }
+        }
+        else if (format == 3) // IEEE float
+        {
+            if (bitsPerSample != 32) { DBGMSG("Unsupported float bits=%d\n", bitsPerSample); return false; }
+            for (size_t f = 0; f < numFrames; ++f) {
+                const float* frm = reinterpret_cast<const float*>(pcm + f * frameSizeBytes);
+                for (int ch = 0; ch < numChans; ++ch)
+                    out.samples[ch][(int)f] = frm[ch];
+            }
+        }
+
+        DBGMSG("Loaded WAV OK: %dch, %d Hz, %d bits, %d frames\n", numChans, sampleRate, bitsPerSample, (int)numFrames);
+        return true;
+    }
+
+
+
+
+    struct OneShotPlayer
+    {
+        void SetSample(const AudioFile<SampleT>& af)
+        {
+            mSrcSR = af.getSampleRate();
+            mNumCh = af.getNumChannels();
+            const int N = af.getNumSamplesPerChannel();
+
+            mBuf.assign(mNumCh, {});
+            for (int ch = 0; ch < mNumCh; ++ch)
+            {
+                mBuf[ch].resize(N);
+                std::copy(af.samples[ch].begin(), af.samples[ch].end(), mBuf[ch].begin());
+            }
+            mLen = N;
+        }
+
+        void Prepare(double hostSR) { mHostSR = hostSR; mStep = (mSrcSR > 0 ? (double)mSrcSR / mHostSR : 1.0); }
+
+        void Trigger(float vel01)
+        {
+            mVel.store(std::clamp(vel01, 0.f, 1.f), std::memory_order_release);
+            mPos.store(0.0, std::memory_order_release);
+            mPlaying.store(true, std::memory_order_release);
+        }
+
+        void Process(HostSample** outputs, int nOutChans, int nFrames, float gain = 1.0f,
+            HostSample** tap = nullptr)
+        {
+            if (!mPlaying.load(std::memory_order_acquire) || mBuf.empty()) return;
+
+            const float vel = mVel.load(std::memory_order_acquire);
+            const float gtot = gain * vel;
+
+            for (int i = 0; i < nFrames; ++i)
+            {
+                double pos = mPos.load(std::memory_order_relaxed);
+                if (pos >= (double)(mLen - 1)) { mPlaying.store(false, std::memory_order_release); break; }
+
+                const size_t i0 = (size_t)pos;
+                const double frac = pos - (double)i0;
+
+                for (int outCh = 0; outCh < nOutChans; ++outCh)
+                {
+                    const int srcCh = (mNumCh == 1 ? 0 : (outCh < mNumCh ? outCh : 0));
+                    const SampleT s0 = mBuf[srcCh][i0];
+                    const SampleT s1 = mBuf[srcCh][i0 + 1];
+                    const float s = (float)((1.0 - frac) * s0 + frac * s1) * gtot;
+
+                    if (outputs) outputs[outCh][i] += (HostSample)s; // null-safe
+                    if (tap)     tap[outCh][i] += (HostSample)s;
+                }
+
+                pos += mStep;
+                mPos.store(pos, std::memory_order_relaxed);
+            }
+        }
+
+    private:
+        std::vector<std::vector<SampleT>> mBuf;
+        std::atomic<bool>  mPlaying{ false };
+        std::atomic<double> mPos{ 0.0 };
+        std::atomic<float> mVel{ 1.0f };
+        int    mNumCh = 0;
+        int    mLen = 0;
+        int    mSrcSR = 0;
+        double mHostSR = 0.0;
+        double mStep = 1.0;
+    };
+
+    struct TagTap { HostSample** tap; const char* tag; };
+
+    struct DrumKit
+    {
+        struct Entry {
+            int note = 0;
+            std::string path;
+            std::string tag;
+            std::unique_ptr<AudioFile<SampleT>> file;
+            std::unique_ptr<OneShotPlayer>      player;
+            std::atomic<float> gain{ 1.0f };
+        };
+
+
+        void Add(int note, const char* path, const char* tag)
+        {
+            auto e = std::make_unique<Entry>();
+            e->note = note;
+            e->path = path ? path : "";
+            e->tag = tag ? tag : "";
+            e->file = std::make_unique<AudioFile<SampleT>>();
+            e->player = std::make_unique<OneShotPlayer>();
+
+            if (e->file->load(e->path) && e->file->getNumChannels() > 0 && e->file->getNumSamplesPerChannel() > 1)
+            {
+                e->player->SetSample(*e->file);
+                mEntries.push_back(std::move(e));
+            }
+            else
+            {
+                DBGMSG("Failed to load sample: %s\n", e->path.c_str());
+            }
+        }
+
+        void AddFromMemory(int note, const uint8_t* bytes, int length, const char* tag)
+        {
+            auto e = std::make_unique<Entry>();
+            e->note = note;
+            e->tag = tag ? tag : "";
+            e->file = std::make_unique<AudioFile<SampleT>>();
+            e->player = std::make_unique<OneShotPlayer>();
+
+            AudioFile<SampleT> tmp;
+            if (LoadWavFromMemory(bytes, (size_t)length, tmp) &&
+                tmp.getNumChannels() > 0 && tmp.getNumSamplesPerChannel() > 1)
+            {
+                *(e->file) = std::move(tmp);
+                e->player->SetSample(*e->file);
+                mEntries.push_back(std::move(e));
+            }
+            else
+            {
+                DBGMSG("Failed to load sample from memory: %s\n", e->tag.c_str());
+            }
+        }
+
+
+
+        void Prepare(double hostSR) { for (auto& e : mEntries) e->player->Prepare(hostSR); }
+
+        void Trigger(int note, float vel01)
+        {
+            for (auto& e : mEntries)
+                if (e->note == note) e->player->Trigger(vel01);
+        }
+
+        void SetGainTag(const char* tag, float g)
+        {
+            constexpr float kGainMax = 2.0f;
+            const float gg = std::clamp(g, 0.0f, kGainMax);
+            for (auto& e : mEntries)
+                if (e->tag == tag)
+                    e->gain.store(gg, std::memory_order_release);
+        }
+
+        // НОВЫЙ Process: список (tap, tag) любой длины
+        void Process(HostSample** outputs, int nOutChans, int nFrames,
+            std::initializer_list<TagTap> taps)
+        {
+            for (auto& e : mEntries)
+            {
+                HostSample** aux = nullptr;
+                for (const auto& tt : taps)
+                {
+                    if (tt.tap && tt.tag && (e->tag == tt.tag)) { aux = tt.tap; break; }
+                }
+                e->player->Process(outputs, nOutChans, nFrames,
+                    e->gain.load(std::memory_order_acquire), aux);
+            }
+        }
+
+        std::vector<int> Notes() const
+        {
+            std::vector<int> out; out.reserve(mEntries.size());
+            for (auto& e : mEntries) out.push_back(e->note);
+            return out;
+        }
+
+        // ---- ДОБАВЛЕНО: сбросить набор (фикс "накапливающейся" громкости в DAW)
+        void Clear()
+        {
+            mEntries.clear();
+        }
+
+    private:
+        std::vector<std::unique_ptr<Entry>> mEntries;
+    };
+
+    static DrumKit gKit;
+
+} // namespace
+
+//======================================================================
+// 3) UI-ХЕЛПЕРЫ (только при наличии редактора)
+//======================================================================
+#if IPLUG_EDITOR
+
+// --- КАСТОМНЫЙ СЛАЙДЕР С ПРОЗРАЧНЫМ ТРЕКОМ ---
+class BitmapHandleVSlider final : public IControl
+{
+public:
+    BitmapHandleVSlider(const IRECT& bounds,
+        const IBitmap& handleBmp,
+        const IRECT& travelRect,
+        float handleScale = 1.f,
+        int editTextTag = kCtrlTagKickValueText)
+        : IControl(bounds)
+        , mHandle(handleBmp)
+        , mTravel(travelRect.GetPixelAligned())
+        , mHandleScale(std::max(0.01f, handleScale))
+        , mEditTextTag(editTextTag)
+    {
+        mDblAsSingleClick = false;
+        SetActionFunction([](IControl* p) { SplashClickActionFunc(p); });
+    }
+
+    void SetTravelRect(const IRECT& r) { mTravel = r.GetPixelAligned(); SetDirty(false); }
+    void SetHandleScale(float s) { mHandleScale = std::max(0.01f, s); SetDirty(false); }
+    void SetEditTextTag(int tag) { mEditTextTag = tag; }
+
+    void Draw(IGraphics& g) override
+    {
+        if (!mHandle.GetAPIBitmap()) return;
+        g.DrawFittedBitmap(mHandle, GetHandleRect().GetPixelAligned());
+    }
+
+    void OnMouseDown(float x, float y, const IMouseMod& mod) override
+    {
+        const IRECT hr = GetHandleRect();
+
+        if (mod.R && hr.Contains(x, y))
+        {
+            if (auto* ui = GetUI())
+            {
+                if (auto* t = ui->GetControlWithTag(mEditTextTag))
+                {
+                    const double v = GetValue();
+                    const double g = std::max(GainFromV(v), kMinGain);
+                    const double dB = 20.0 * std::log10(g);
+                    WDL_String s; FormatDBString(s, dB);
+                    t->As<IEditableTextControl>()->SetStr(s.Get());
+
+                    const float editW = 30.f;
+                    const float editH = 24.f;
+                    IRECT newR = IRECT::MakeXYWH(x - editW * 0.5f, y - editH * 0.5f, editW, editH);
+                    t->SetTargetAndDrawRECTs(newR);
+
+                    t->Hide(false); t->SetDirty(false);
+                    if (auto* catcher = ui->GetControlWithTag(kCtrlTagClickCatcher))
+                    {
+                        catcher->Hide(false);
+                        catcher->SetTargetAndDrawRECTs(ui->GetBounds());
+                        catcher->SetDirty(false);
+                    }
+
+                    IMouseMod startEdit; startEdit.L = true;
+                    t->OnMouseDown(x, y, startEdit);
+                }
+            }
+            return;
+        }
+
+        if (hr.Contains(x, y))
+            mGrabDY = y - hr.MH();
+        else
+            mGrabDY = 0.0f;
+
+        SetValFromPoint(y);
+    }
+
+    void OnMouseDrag(float, float y, float, float, const IMouseMod&) override
+    {
+        SetValFromPoint(y);
+    }
+
+    bool IsHit(float x, float y) const override
+    {
+        return mRECT.Contains(x, y);
+    }
+
+private:
+    IRECT GetHandleRect() const
+    {
+        const float hw = (float)mHandle.W() * mHandleScale;
+        const float hh = (float)mHandle.H() * mHandleScale;
+
+        const double v = GetValue();
+        const float minY = mTravel.B - hh;
+        const float maxY = mTravel.T;
+        const float top = (float)(maxY + (minY - maxY) * (1.0 - v));
+
+        const float cx = mTravel.MW();
+        return IRECT::MakeXYWH(cx - hw * 0.5f, top, hw, hh);
+    }
+
+    void OnMouseDblClick(float, float, const IMouseMod&) override
+    {
+        SetValue(0.75);
+        SetDirty(true);
+    }
+
+    void SetValFromPoint(float y)
+    {
+        const float hh = (float)mHandle.H() * mHandleScale;
+
+        const float minTop = mTravel.B - hh;
+        const float maxTop = mTravel.T;
+
+        float desiredTop = (y - mGrabDY) - hh * 0.5f;
+        float yyTop = Clip(desiredTop, maxTop, minTop);
+        double v = 1.0 - (yyTop - maxTop) / (minTop - maxTop);
+        SetValue(Clip(v, 0.0, 1.0));
+        SetDirty(true);
+    }
+
+    IBitmap mHandle;
+    IRECT   mTravel;
+    float   mHandleScale;
+    float   mGrabDY = 0.0f;
+    int     mEditTextTag = kCtrlTagKickValueText;
+};
+
+static IVStyle CreatePadStyle()
+{
+    return IVStyle{
+      true, true,
+      { COLOR_TRANSPARENT, COLOR_MID_GRAY, COLOR_LIGHT_GRAY, COLOR_DARK_GRAY, COLOR_TRANSLUCENT, IColor(60, 0, 0, 0), COLOR_BLACK, COLOR_GREEN, COLOR_BLUE },
+      IText(19.0, COLOR_BLACK, "Roboto-Regular", EAlign::Center, EVAlign::Top, 0.0),
+      IText(14.0, COLOR_BLACK, "Roboto-Regular", EAlign::Center, EVAlign::Bottom, 0.0),
+      true, true, true, false,
+      0.0, 1.0, 3.0, 1.0, 0.0
+    };
+}
+
+// Drum Pads: временных слайдеров нет
+static void CreateDrumPads(IGraphics* /*pGraphics*/, const IVStyle& /*padStyle*/)
+{
+}
+
+class MappingOverlayControl final : public IControl
+{
+public:
+    MappingOverlayControl(const IRECT& bounds, const IBitmap& bmp, const IRECT& imageRect)
+        : IControl(bounds), mBmp(bmp), mImgRECT(imageRect.GetPixelAligned()) {}
+
+    void SetMenuButton(IControl* c) { mMenuButton = c; }
+    void SetImageRect(const IRECT& r) { mImgRECT = r.GetPixelAligned(); SetDirty(false); }
+    void SetBitmap(const IBitmap& bmp) { mBmp = bmp; SetDirty(false); }
+    void LinkControl(IControl* c) { if (c) mLinked.push_back(c); }
+
+    // --- NEW: поведение закрытия / хит-тест ---
+    void SetCloseOnOutside(bool v) { mCloseOnOutside = v; }
+    void SetHitTestImageOnly(bool v) { mHitImageOnly = v; }
+
+    // --- NEW: safe-zones (можно несколько)
+    void ClearNoCloseRects() { mNoCloseRECTs.clear(); }
+    void AddNoCloseRect(const IRECT& r) { mNoCloseRECTs.push_back(r.GetPixelAligned()); }
+
+    // NEW: динамические провайдеры safe-зон
+    void AddNoCloseRectProvider(std::function<IRECT()> fn) { mNoCloseProviders.push_back(std::move(fn)); }
+
+    // NEW: callback при автозакрытии кликом «снаружи»
+    void SetOnAutoClose(std::function<void()> fn) { mOnAutoClose = std::move(fn); }
+
+    // нужно, чтобы передавать safe-зоны извне
+    IRECT GetImageRect() const { return mImgRECT; }
+
+    void Draw(IGraphics& g) override
+    {
+        if (!IsHidden() && mBmp.GetAPIBitmap())
+            g.DrawFittedBitmap(mBmp, mImgRECT);
+    }
+
+    bool IsHit(float x, float y) const override
+    {
+        if (IsHidden()) return false;
+        return mHitImageOnly ? mImgRECT.Contains(x, y)     // только картинка
+            : mRECT.Contains(x, y);       // всё bounds
+    }
+
+    void HideWithLinked(bool hide)
+    {
+        Hide(hide);
+        for (auto* c : mLinked) if (c) { c->Hide(hide); c->SetDirty(false); }
+        SetDirty(false);
+    }
+
+    void OnMouseDown(float x, float y, const IMouseMod&) override
+    {
+        if (!mCloseOnOutside) return;
+
+        const bool inImg = mImgRECT.Contains(x, y);
+
+        // собрать актуальные safe-зоны
+        bool inSafe = false;
+        for (const auto& r : mNoCloseRECTs)
+            if (r.Contains(x, y)) { inSafe = true; break; }
+
+        if (!inSafe) // проверка динамических провайдеров
+        {
+            for (const auto& getR : mNoCloseProviders)
+            {
+                const IRECT rr = getR().GetPixelAligned();
+                if (rr.Contains(x, y)) { inSafe = true; break; }
+            }
+        }
+
+        if (!inImg && !inSafe)
+        {
+            if (mOnAutoClose) mOnAutoClose(); // <<< ВАЖНО: сообщаем о предстоящем автозакрытии
+            HideWithLinked(true);
+            if (mMenuButton) { mMenuButton->SetValue(0.0); mMenuButton->SetDirty(false); }
+        }
+    }
+
+private:
+    IBitmap   mBmp;
+    IRECT     mImgRECT;
+
+    bool   mCloseOnOutside = true;
+    bool   mHitImageOnly = false;
+
+    std::vector<IRECT> mNoCloseRECTs;
+    std::vector<std::function<IRECT()>> mNoCloseProviders;
+
+    IControl* mMenuButton = nullptr;
+    std::vector<IControl*> mLinked;
+
+    // NEW
+    std::function<void()> mOnAutoClose;
+};
+
+
+
+
+// --- Пэд-кнопки, клавиатура, текст
+class SpritePadButton final : public IControl
+{
+public:
+    SpritePadButton(const IRECT& bounds, const IBitmap& pressedBmp, int midiNote, const char* tooltip, TemplateProject& plug)
+        : IControl(bounds), mPressedBmp(pressedBmp), mNote(midiNote), mPlug(plug)
+    {
+        if (tooltip) SetTooltip(tooltip);
+        SetActionFunction([](IControl* p) { SplashClickActionFunc(p); });
+
+        mDblAsSingleClick = false;
+    }
+
+    void Draw(IGraphics& g) override
+    {
+        if (GetValue() <= 0.5) return;
+        if (mPressedBmp.GetAPIBitmap())
+            g.DrawFittedBitmap(mPressedBmp, mRECT.GetPixelAligned());
+    }
+
+    void OnMouseDown(float, float, const IMouseMod&) override
+    {
+        if (mHeld) return;
+        mHeld = true;
+        SetValue(1.0);
+        SetDirty(false);
+        IMidiMsg m; m.MakeNoteOnMsg(mNote, 127, 0); mPlug.SendMidiMsgFromUI(m);
+    }
+
+    void OnMouseUp(float, float, const IMouseMod&) override
+    {
+        if (!mHeld) return;
+        mHeld = false;
+        SetValue(0.0);
+        SetDirty(false);
+        IMidiMsg m; m.MakeNoteOffMsg(mNote, 0); mPlug.SendMidiMsgFromUI(m);
+    }
+
+    void OnMsgFromDelegate(int msgTag, int, const void*) override
+    {
+        if (msgTag == kMsgTagNotePulse)
+        {
+            SetAnimation([this](IControl* c) {
+                const double t = c->GetAnimationProgress();
+                c->SetValue(t < 0.5 ? 1.0 : 0.0);
+                if (t >= 1.0) c->OnEndAnimation();
+                }, 80);
+        }
+    }
+
+    void OnMouseDblClick(float x, float y, const IMouseMod& mod) override
+    {
+        SetDirty(false);
+    }
+
+private:
+    IBitmap mPressedBmp;
+    int     mNote = 36;
+    bool    mHeld = false;
+    TemplateProject& mPlug;
+};
+
+static inline IRECT MakeSpriteRectFromCenter(const IBitmap& bmp, float scale, float cx, float cy)
+{
+    const float w = (float)bmp.W() * scale;
+    const float h = (float)bmp.H() * scale;
+    return IRECT::MakeXYWH(cx - 0.5f * w, cy - 0.5f * h, w, h).GetPixelAligned();
+}
+
+
+class CymbalSlideTrigger final : public IControl
+{
+public:
+    struct State { float cx = 0, cy = 0, w = 0, h = 0; };          // картинка
+    struct TriggerBox { float dx = 0, dy = 0, w = -1, h = -1; };        // триггер
+
+    CymbalSlideTrigger(MappingOverlayControl* pUnd,
+        MappingOverlayControl* pFg,
+        const State& closed,
+        const State& open,
+        const TriggerBox& trig,
+        double animMs = 180.0)
+        : IControl(IRECT())            // стартовый bounds не берём — выставим в OnInit()
+        , mUnd(pUnd), mFg(pFg)
+        , mClosed(closed), mOpen(open)
+        , mTrig(trig), mAnimMs(animMs)
+    {}
+
+    // Удобный хелпер: строит State как "относительно menuRectC"
+    // cx = menuRectC.MW() + xShift; cy = menuRectC.T - yOffset
+    static State MakeStateFromMenuTop(const IRECT& menuRectC,
+        float xShift, float yOffset,
+        float w, float h)
+    {
+        State s;
+        s.cx = menuRectC.MW() + xShift;
+        s.cy = menuRectC.T - yOffset;
+        s.w = w; s.h = h;
+        return s;
+    }
+
+    void OnInit() override { Apply(0.0f); }          // сразу — состояние "closed"
+    void Draw(IGraphics&) override {}                // прозрачный
+
+    bool IsHit(float x, float y) const override { return mRECT.Contains(x, y); }
+
+    void OnMouseDown(float, float, const IMouseMod&) override
+    {
+        const bool targetOpen = !mIsOpen;
+        const double from = mIsOpen ? 1.0 : 0.0;
+        const double to = targetOpen ? 1.0 : 0.0;
+
+        SetAnimation([=](IControl* c)
+            {
+                const double t = c->GetAnimationProgress();
+                const double a = from + (to - from) * t; // 0..1
+                Apply((float)a);
+                if (t >= 1.0)
+                {
+                    mIsOpen = targetOpen;
+                    Apply(mIsOpen ? 1.f : 0.f);
+                    c->OnEndAnimation();
+                }
+            }, mAnimMs);
+    }
+
+    // Программно открыть/закрыть
+    void SetOpen(bool open, bool noAnim = true)
+    {
+        mIsOpen = open;
+        if (noAnim) Apply(open ? 1.f : 0.f);
+        else OnMouseDown(0, 0, IMouseMod());
+    }
+
+    // Сеттеры — можно менять на лету
+    void SetClosedState(const State& s) { mClosed = s; Apply(mIsOpen ? 1.f : 0.f); }
+    void SetOpenState(const State& s) { mOpen = s; Apply(mIsOpen ? 1.f : 0.f); }
+    void SetStates(const State& closed, const State& open)
+    {
+        mClosed = closed; mOpen = open; Apply(mIsOpen ? 1.f : 0.f);
+    }
+
+    void SetTriggerBox(const TriggerBox& tb) { mTrig = tb; Apply(mIsOpen ? 1.f : 0.f); }
+    void SetTriggerOffset(float dx, float dy) { mTrig.dx = dx; mTrig.dy = dy; Apply(mIsOpen ? 1.f : 0.f); }
+    void SetTriggerSize(float w, float h) { mTrig.w = w; mTrig.h = h; Apply(mIsOpen ? 1.f : 0.f); }
+
+private:
+    static inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
+
+    void Apply(float a01) // a01: 0=closed, 1=open
+    {
+        // 1) интерполируем состояние картинки
+        State s;
+        s.cx = Lerp(mClosed.cx, mOpen.cx, a01);
+        s.cy = Lerp(mClosed.cy, mOpen.cy, a01);
+        s.w = Lerp(mClosed.w, mOpen.w, a01);
+        s.h = Lerp(mClosed.h, mOpen.h, a01);
+
+        const IRECT imgRect = IRECT::MakeXYWH(s.cx - 0.5f * s.w,
+            s.cy - 0.5f * s.h,
+            s.w, s.h).GetPixelAligned();
+
+        if (mUnd) { mUnd->SetImageRect(imgRect); mUnd->SetDirty(false); }
+        if (mFg) { mFg->SetImageRect(imgRect);  mFg->SetDirty(false); }
+
+        // 2) хит-рект триггера (по умолчанию равен картинке)
+        const float tw = (mTrig.w > 0 ? mTrig.w : s.w);
+        const float th = (mTrig.h > 0 ? mTrig.h : s.h);
+        const float tcx = s.cx + mTrig.dx;
+        const float tcy = s.cy + mTrig.dy;
+
+        const IRECT trigRect = IRECT::MakeXYWH(tcx - 0.5f * tw, tcy - 0.5f * th, tw, th).GetPixelAligned();
+        SetTargetAndDrawRECTs(trigRect);
+        SetDirty(false);
+    }
+
+private:
+    MappingOverlayControl* mUnd = nullptr;
+    MappingOverlayControl* mFg = nullptr;
+    State      mClosed, mOpen;
+    TriggerBox mTrig;
+    double     mAnimMs = 180.0;
+    bool       mIsOpen = false;
+};
+
+
+
+
+
+
+
+class LabeledSpriteToggleButton final : public IControl
+{
+public:
+    LabeledSpriteToggleButton(const IRECT& bounds,
+        const IBitmap& bmp,
+        const WDL_String& label,
+        const IText& textStyle,
+        const char* tooltip = nullptr)
+        : IControl(bounds)
+        , mBmp(bmp)
+        , mLabel(label)
+        , mText(textStyle)
+    {
+        if (tooltip) SetTooltip(tooltip);
+        SetActionFunction([](IControl* p) { SplashClickActionFunc(p); });
+    }
+
+    void Draw(IGraphics& g) override
+    {
+        const IRECT r = mRECT.GetPixelAligned();
+        if (mBmp.GetAPIBitmap())
+            g.DrawFittedBitmap(mBmp, r);
+
+        IText centered = mText;
+        centered.mAlign = EAlign::Center;
+        centered.mVAlign = EVAlign::Middle;
+        g.DrawText(centered, mLabel.Get(), r);
+    }
+
+    void OnMouseDown(float, float, const IMouseMod&) override
+    {
+        SetValue(GetValue() > 0.5 ? 0.0 : 1.0);
+        SetDirty(true);
+    }
+
+    void SetLabel(const char* s) { mLabel.Set(s); SetDirty(false); }
+    void SetTextStyle(const IText& t) { mText = t; SetDirty(false); }
+
+private:
+    IBitmap     mBmp;
+    WDL_String  mLabel;
+    IText       mText;
+};
+
+class SpriteToggleButton final : public IControl
+{
+public:
+    SpriteToggleButton(const IRECT& bounds, const IBitmap& bmp, const char* tooltip = nullptr)
+        : IControl(bounds), mBmp(bmp)
+    {
+        if (tooltip) SetTooltip(tooltip);
+        SetActionFunction([](IControl* p) { SplashClickActionFunc(p); });
+    }
+
+    void Draw(IGraphics& g) override
+    {
+        if (mBmp.GetAPIBitmap())
+            g.DrawFittedBitmap(mBmp, mRECT.GetPixelAligned());
+    }
+
+    void OnMouseDown(float, float, const IMouseMod&) override
+    {
+        SetValue(GetValue() > 0.5 ? 0.0 : 1.0);
+        SetDirty(true);
+    }
+
+private:
+    IBitmap mBmp;
+};
+
+static void SetupQwertyKeyboard(IGraphics* pGraphics, int kMinNote, int kMaxNote, TemplateProject* plugin)
+{
+    constexpr int kQwertyStartBase = 36; // C2
+    auto qwertyBase = std::make_shared<int>(kQwertyStartBase);
+    auto held = std::make_shared<std::array<bool, 128>>();
+    held->fill(false);
+
+    pGraphics->SetKeyHandlerFunc([pGraphics, qwertyBase, held, kMinNote, kMaxNote, plugin](const IKeyPress& key, bool isUp) -> bool
+        {
+            auto clampPitch = [&](int p) { return std::clamp(p, kMinNote, kMaxNote); };
+            auto send = [&](int pitch, bool on)
+                {
+                    pitch = clampPitch(pitch);
+                    if (on)
+                    {
+                        if ((*held)[pitch]) return;
+                        (*held)[pitch] = true;
+                        IMidiMsg m; m.MakeNoteOnMsg(pitch, 127, 0);
+                        plugin->SendMidiMsgFromUI(m);
+                        if (auto* c = pGraphics->GetControlWithTag(kCtrlTagKeyboard))
+                            c->As<IVKeyboardControl>()->SetNoteFromMidi(pitch, true);
+                    }
+                    else
+                    {
+                        if (!(*held)[pitch]) return;
+                        (*held)[pitch] = false;
+                        IMidiMsg m; m.MakeNoteOffMsg(pitch, 0);
+                        plugin->SendMidiMsgFromUI(m);
+                        if (auto* c = pGraphics->GetControlWithTag(kCtrlTagKeyboard))
+                            c->As<IVKeyboardControl>()->SetNoteFromMidi(pitch, false);
+                    }
+                };
+
+            int off = -999;
+            switch (key.VK)
+            {
+            case kVK_A: off = 0; break;   case kVK_W: off = 1; break;
+            case kVK_S: off = 2; break;   case kVK_E: off = 3; break;
+            case kVK_D: off = 4; break;   case kVK_F: off = 5; break;
+            case kVK_T: off = 6; break;   case kVK_G: off = 7; break;
+            case kVK_Y: off = 8; break;   case kVK_H: off = 9; break;
+            case kVK_U: off = 10; break;  case kVK_J: off = 11; break;
+            case kVK_K: off = 12; break;  case kVK_O: off = 13; break;
+            case kVK_L: off = 14; break;
+            default: return false;
+            }
+
+            const int pitch = *qwertyBase + off;
+            send(pitch, !isUp);
+            return true;
+        });
+}
+
+// ===== ЛОВУШКА КЛИКОВ: прячет поля ввода (kick/snare/toms/cymbals/rooms/master) =====
+class ClickDismissLayer final : public IControl
+{
+public:
+    ClickDismissLayer(const IRECT& bounds) : IControl(bounds) {}
+    void Draw(IGraphics&) override {}
+    void OnMouseDown(float, float, const IMouseMod&) override
+    {
+        if (auto* ui = GetUI())
+        {
+            if (auto* t = ui->GetControlWithTag(kCtrlTagKickValueText)) { t->Hide(true); t->SetDirty(false); }
+            if (auto* t2 = ui->GetControlWithTag(kCtrlTagSnareValueText)) { t2->Hide(true); t2->SetDirty(false); }
+            if (auto* t3 = ui->GetControlWithTag(kCtrlTagTom1ValueText)) { t3->Hide(true); t3->SetDirty(false); }
+            if (auto* t4 = ui->GetControlWithTag(kCtrlTagTom2ValueText)) { t4->Hide(true); t4->SetDirty(false); }
+            if (auto* t5 = ui->GetControlWithTag(kCtrlTagTom3ValueText)) { t5->Hide(true); t5->SetDirty(false); }
+            if (auto* t6 = ui->GetControlWithTag(kCtrlTagCymbalsValueText)) { t6->Hide(true); t6->SetDirty(false); }
+            if (auto* t7 = ui->GetControlWithTag(kCtrlTagRoomsValueText)) { t7->Hide(true); t7->SetDirty(false); }
+            if (auto* t8 = ui->GetControlWithTag(kCtrlTagMasterValueText)) { t8->Hide(true); t8->SetDirty(false); }
+            Hide(true); SetDirty(false);
+        }
+    }
+};
+
+class KickDBEditableText final : public IEditableTextControl
+{
+public:
+    using IEditableTextControl::IEditableTextControl;
+
+    void OnMouseDown(float x, float y, const IMouseMod& mod) override
+    {
+        std::string s = GetStr() ? GetStr() : "";
+        for (char& c : s) if (c == ',') c = '.';
+        auto trim = [](std::string& t) {
+            size_t a = 0, b = t.size();
+            while (a < b && isspace((unsigned char)t[a])) ++a;
+            while (b > a && isspace((unsigned char)t[b - 1])) --b;
+            t = t.substr(a, b - a);
+            };
+        trim(s);
+        while (!s.empty() && (std::isalpha((unsigned char)s.back()) || std::isspace((unsigned char)s.back())))
+            s.pop_back();
+        trim(s);
+        if (!s.empty() && s.front() == '+')
+            s.erase(s.begin());
+        if (s.empty())
+            s = "0.0";
+
+        SetStr(s.c_str());
+        IEditableTextControl::OnMouseDown(x, y, mod);
+    }
+};
+
+#endif // IPLUG_EDITOR
+
+//======================================================================
+// 4) TEMPLATEPROJECT: КОНСТРУКТОР И МЕТОДЫ
+//======================================================================
+TemplateProject::TemplateProject(const InstanceInfo& info)
+    : iplug::Plugin(info, MakeConfig(kNumParams, kNumPresets))
+{
+    // ---- ДОБАВЛЕНО: очистить global DrumKit перед наполнением (фикс “нарастающей громкости” в DAW)
+    gKit.Clear();
+
+    // --- ПАРАМЕТРЫ ---
+    GetParam(kParamKick)->InitDouble("Kick Level", 0.75, 0.0, 1.0, 0.001, "");
+    GetParam(kParamSnare)->InitDouble("Snare Level", 0.75, 0.0, 1.0, 0.001, "");
+    // Томa
+    GetParam(kParamTom1)->InitDouble("Tom_01 Level", 0.75, 0.0, 1.0, 0.001, "");
+    GetParam(kParamTom2)->InitDouble("Tom_02 Level", 0.75, 0.0, 1.0, 0.001, "");
+    GetParam(kParamTom3)->InitDouble("Tom_03 Level", 0.75, 0.0, 1.0, 0.001, "");
+    // NEW — cymbals/rooms
+    GetParam(kParamCymbals)->InitDouble("Cymbals Level", 0.75, 0.0, 1.0, 0.001, "");
+    GetParam(kParamRooms)->InitDouble("Rooms Level", 0.75, 0.0, 1.0, 0.001, "");
+    // NEW — Master
+    GetParam(kParamMaster)->InitDouble("Master Level", 0.75, 0.0, 1.0, 0.001, "");
+
+
+
+    // 1) загрузить ShapeShiftDrums.ssdz с диска (лежит рядом с плагином/экзешником или укажите полный путь)
+    auto pack = LoadPackFromPath("ShapeShiftDrums.lib"); // <- путь измените под своё расположение
+    if (!pack.ok) {
+        DBGMSG("Pack not loaded; fallback: no samples\n");
+    }
+    else {
+        // 2) хелпер: добавить WAV, лежащий в .h/.cpp (bin2c)
+        auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag)
+            {
+                const SsdEntry* e = pack.archive.Find(pathInPack);
+                if (!e) { DBGMSG("Missing in pack: %s\n", pathInPack); return; }
+
+                std::vector<uint8_t> wavBytes;
+                if (!ExtractBin2CBytes(e->data.data(), e->data.size(), wavBytes)) {
+                    DBGMSG("bin2c parse failed: %s\n", pathInPack); return;
+                }
+
+                // sanity: проверим RIFF/WAVE (ожидает ваш LoadWavFromMemory)
+                if (!(wavBytes.size() >= 12 && !memcmp(wavBytes.data(), "RIFF", 4) && !memcmp(wavBytes.data() + 8, "WAVE", 4))) {
+                    DBGMSG("not a RIFF/WAVE inside: %s\n", pathInPack); return;
+                }
+
+                gKit.AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag);
+            };
+
+        // 3) Замените старые *_data на пути внутри контейнера (точно как в структуре, что паковал ваш скрипт)
+        // Примеры (подставьте свои относительные пути .h/.cpp из пакета):
+        AddFromPackedHeader(kKickNote, "Kick_Close.h", "kick");
+        AddFromPackedHeader(kSnareNote, "Snare_Close.h", "snare_close");
+
+        AddFromPackedHeader(kTom1Note, "RackTom1_Close.h", "tom01_close");
+        AddFromPackedHeader(kTom2Note, "RackTom2_Close.h", "tom02_close");
+        AddFromPackedHeader(kTom3Note, "FloorTom_Close.h", "tom03_close");
+
+        AddFromPackedHeader(kCrashLNote, "CrashL_Close.h", "crash");
+        AddFromPackedHeader(kCrashRNote, "CrashR_Close.h", "crash");
+
+        AddFromPackedHeader(kKickNote, "Kick_Room.h", "kick_room");
+        AddFromPackedHeader(kSnareNote, "Snare_Room.h", "snare_room");
+        AddFromPackedHeader(kTom3Note, "FloorTom_Room.h", "tom_room");
+        AddFromPackedHeader(kTom1Note, "RackTom1_Room.h", "racktom1_room");
+        AddFromPackedHeader(kTom2Note, "RackTom2_Room.h", "racktom2_room");
+        AddFromPackedHeader(kCrashLNote, "CrashL_Room.h", "crashL_room");
+        AddFromPackedHeader(kCrashRNote, "CrashR_Room.h", "crashR_room");
+    }
+
+#if IPLUG_EDITOR
+    // --- графика/верстка ---
+    mMakeGraphicsFunc = [&]() {
+        return MakeGraphics(*this, PLUG_WIDTH, PLUG_HEIGHT, PLUG_FPS, GetScaleForScreen(PLUG_WIDTH, PLUG_HEIGHT));
+        };
+
+    mLayoutFunc = [&](IGraphics* pGraphics)
+        {
+            // База UI
+            pGraphics->AttachCornerResizer(EUIResizerMode::Scale, false);
+            pGraphics->AttachPanelBackground(COLOR_BLACK);
+            pGraphics->LoadFont("Roboto-Regular", ROBOTO_FN);
+            pGraphics->AttachTextEntryControl();
+
+            const IVStyle padStyle = CreatePadStyle();
+            const IRECT bounds = pGraphics->GetBounds();
+            const IRECT innerBounds = bounds;
+            const IRECT bottomRow = innerBounds.GetFromBottom(140);
+            const IRECT keyboardBounds = bottomRow;
+            const IRECT versionBounds = innerBounds.GetFromTRHC(300, 20);
+
+            // Фон
+            const IBitmap bgBmp = pGraphics->LoadBitmap(IMG_BACKGROUND_FN, 1);
+            static float kaef = 1.f;
+            static float gBoxW = 1500.f * kaef, gBoxH = 864.f * kaef;
+
+            pGraphics->AttachControl(
+                new ILambdaControl(pGraphics->GetBounds(),
+                    [bgBmp](ILambdaControl* c, IGraphics& g, IRECT&)
+                    {
+                        if (!bgBmp.GetAPIBitmap()) return;
+                        const IRECT win = g.GetBounds();
+                        if (c->GetRECT() != win) c->SetTargetAndDrawRECTs(win);
+                        g.FillRect(COLOR_BLACK, win);
+                        const IRECT box = win.GetCentredInside(gBoxW, gBoxH).GetPixelAligned().GetVShifted(0).GetHShifted(0);
+                        g.DrawFittedBitmap(bgBmp, box);
+                    }),
+                kCtrlTagBgImage
+            )->SetIgnoreMouse(true);
+
+            const IBitmap kickOverlayBmp = pGraphics->LoadBitmap(IMG_KICK_OVERLAY_FN, 1);
+            pGraphics->AttachControl(
+                new ILambdaControl(bounds, [kickOverlayBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+                    {
+                        // показываем оверлей только пока пад кика «включен»
+                        if (IControl* kickBtn = g.GetControlWithTag(kCtrlTagKickButton))
+                        {
+                            if (kickBtn->GetValue() <= 0.5) return; // не нажато — ничего не рисуем
+                        }
+                        else
+                            return;
+
+                        if (!kickOverlayBmp.GetAPIBitmap()) return;
+                        static IBlend kKickOverlayBlend{ EBlend::Default, 0.2f };
+                        g.DrawFittedBitmap(kickOverlayBmp, r, &kKickOverlayBlend);
+                    }), kCtrlTagKickOverlay)->SetIgnoreMouse(true);
+
+            const IBitmap snareOverlayBmp = pGraphics->LoadBitmap(IMG_SNARE_OVERLAY_FN, 1);
+            pGraphics->AttachControl(
+                new ILambdaControl(bounds, [snareOverlayBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+                    {
+                        if (IControl* snareBtn = g.GetControlWithTag(kCtrlTagSnareButton))
+                        {
+                            if (snareBtn->GetValue() <= 0.5) return;
+                        }
+                        else
+                            return;
+
+                        if (!snareOverlayBmp.GetAPIBitmap()) return;
+                        static IBlend ksnareOverlayBmp{ EBlend::Default, 0.4f };
+                        g.DrawFittedBitmap(snareOverlayBmp, r, &ksnareOverlayBmp);
+                    }), kCtrlTagSnareOverlay)->SetIgnoreMouse(true);
+
+            const IBitmap crashLOverlayBmp = pGraphics->LoadBitmap(IMG_CRASH_L_OVERLAY_FN, 1);
+            pGraphics->AttachControl(
+                new ILambdaControl(bounds, [crashLOverlayBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+                    {
+                        if (IControl* snareBtn = g.GetControlWithTag(kCtrlTagCrashLButton))
+                        {
+                            if (snareBtn->GetValue() <= 0.5) return;
+                        }
+                        else
+                            return;
+
+                        if (!crashLOverlayBmp.GetAPIBitmap()) return;
+                        static IBlend kcrashLOverlayBmp{ EBlend::Default, 0.13f };
+                        g.DrawFittedBitmap(crashLOverlayBmp, r, &kcrashLOverlayBmp);
+                    }), kCtrlTagCrashLOverlay)->SetIgnoreMouse(true);
+
+            const IBitmap crashROverlayBmp = pGraphics->LoadBitmap(IMG_CRASH_R_OVERLAY_FN, 1);
+            pGraphics->AttachControl(
+                new ILambdaControl(bounds, [crashROverlayBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+                    {
+                        // показываем оверлей пока пэд Crash R нажат
+                        if (IControl* crashRBtn = g.GetControlWithTag(kCtrlTagCrashRButton))
+                        {
+                            if (crashRBtn->GetValue() <= 0.5) return;
+                        }
+                        else
+                            return;
+
+                        if (!crashROverlayBmp.GetAPIBitmap()) return;
+                        static IBlend kCrashROverlayBlend{ EBlend::Default, 0.3f };
+                        g.DrawFittedBitmap(crashROverlayBmp, r, &kCrashROverlayBlend);
+                    }), kCtrlTagCrashROverlay)->SetIgnoreMouse(true);
+
+            // >>> TOM 3 OVERLAY <<<
+            const IBitmap tom3OverlayBmp = pGraphics->LoadBitmap(IMG_TOM_3_OVERLAY_FN, 1);
+            pGraphics->AttachControl(
+                new ILambdaControl(bounds, [tom3OverlayBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+                    {
+                        // показываем оверлей пока пэд тома нажат
+                        if (IControl* tomBtn = g.GetControlWithTag(kCtrlTagTomButton))
+                        {
+                            if (tomBtn->GetValue() <= 0.5) return;
+                        }
+                        else
+                            return;
+
+                        if (!tom3OverlayBmp.GetAPIBitmap()) return;
+                        static IBlend ktom3OverlayBlend{ EBlend::Default, 0.3f };
+                        g.DrawFittedBitmap(tom3OverlayBmp, r, &ktom3OverlayBlend);
+                    }), kCtrlTagTom3Overlay)->SetIgnoreMouse(true);
+
+            // >>> TOM 2 OVERLAY <<<
+            const IBitmap tom2OverlayBmp = pGraphics->LoadBitmap(IMG_TOM_2_OVERLAY_FN, 1);
+            pGraphics->AttachControl(
+                new ILambdaControl(bounds, [tom2OverlayBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+                    {
+                        // показываем оверлей пока пэд тома нажат
+                        if (IControl* tomBtn = g.GetControlWithTag(kCtrlTagPadRackTom2Button))
+                        {
+                            if (tomBtn->GetValue() <= 0.5) return;
+                        }
+                        else
+                            return;
+
+                        if (!tom2OverlayBmp.GetAPIBitmap()) return;
+                        static IBlend ktom2OverlayBlend{ EBlend::Default, 0.5f };
+                        g.DrawFittedBitmap(tom2OverlayBmp, r, &ktom2OverlayBlend);
+                    }), kCtrlTagTom2Overlay)->SetIgnoreMouse(true);
+
+            // >>> TOM 1 OVERLAY <<<
+            const IBitmap tom1OverlayBmp = pGraphics->LoadBitmap(IMG_TOM_1_OVERLAY_FN, 1);
+            pGraphics->AttachControl(
+                new ILambdaControl(bounds, [tom1OverlayBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+                    {
+                        // показываем оверлей пока пэд тома нажат
+                        if (IControl* tomBtn = g.GetControlWithTag(kCtrlTagPadRackTom1Button))
+                        {
+                            if (tomBtn->GetValue() <= 0.5) return;
+                        }
+                        else
+                            return;
+
+                        if (!tom1OverlayBmp.GetAPIBitmap()) return;
+                        static IBlend ktom1OverlayBlend{ EBlend::Default, 0.25f };
+                        g.DrawFittedBitmap(tom1OverlayBmp, r, &ktom1OverlayBlend);
+                    }), kCtrlTagTom1Overlay)->SetIgnoreMouse(true);
+
+            // Пэды-громкости
+            CreateDrumPads(pGraphics, padStyle);
+
+            // Клавиатура (можно скрыть)
+            const int kMinNote = 24, kMaxNote = 72;
+            auto* pKB = pGraphics->AttachControl(new IVKeyboardControl(keyboardBounds, kMinNote, kMaxNote), kCtrlTagKeyboard);
+            pKB->Hide(true);
+
+            // QWERTY
+            SetupQwertyKeyboard(pGraphics, kMinNote, kMaxNote, this);
+
+#define ENABLE_KB_OVERLAY 0
+#if ENABLE_KB_OVERLAY
+            {
+                // список назначенных нот из набора семплов (цветим только их)
+                const auto sampleNotes = gKit.Notes();
+
+                auto* pKBOverlay = pGraphics->AttachControl(
+                    new ILambdaControl(
+                        keyboardBounds,
+                        [sampleNotes, kMinNote, kMaxNote](ILambdaControl*, IGraphics& g, IRECT& r)
+                        {
+                            auto isBlack = [](int n)->bool {
+            switch (n % 12) { case 1: case 3: case 6: case 8: case 10: return true; default: return false; }
+                                };
+                            auto whiteIndex = [=](int note)->int { int idx = 0; for (int n = kMinNote; n < note; ++n) if (!isBlack(n)) ++idx; return idx; };
+                            auto countWhites = [=]()->int { int cnt = 0; for (int n = kMinNote; n <= kMaxNote; ++n) if (!isBlack(n)) ++cnt; return cnt; };
+
+                            constexpr float kAlphaWhite = 0.75f;
+                            constexpr float kAlphaBlack = 0.75f;
+
+                            auto colorWhite = [&](int note)->IColor {
+                                const float h = std::fmodf(note * 0.6180339887f, 1.f);
+                                return IColor::FromHSLA(h, 0.70f, 0.55f, kAlphaWhite);
+                                };
+                            auto colorBlack = [&](int note)->IColor {
+                                const float h = std::fmodf(note * 0.6180339887f, 1.f);
+                                return IColor::FromHSLA(h, 0.70f, 0.55f, kAlphaBlack);
+                                };
+
+                            const int nWhites = countWhites();
+                            if (nWhites <= 1) return;
+
+                            const float Lf = std::roundf(r.L);
+                            const float Rf = std::roundf(r.R);
+                            const int   W = static_cast<int>(std::roundf(Rf - Lf));
+                            const int baseW = W / nWhites;
+                            const int extra = W - baseW * nWhites;
+
+                            std::vector<int> edge(nWhites + 1);
+                            edge[0] = static_cast<int>(Lf);
+                            for (int i = 0; i < nWhites; ++i) {
+                                const int w = baseW + (i < extra ? 1 : 0);
+                                edge[i + 1] = edge[i] + w;
+                            }
+
+                            const float whiteWf = (Rf - Lf) / static_cast<float>(nWhites);
+                            std::vector<float> drift(nWhites + 1);
+                            for (int i = 0; i <= nWhites; ++i)
+                                drift[i] = static_cast<float>(edge[i]) - (Lf + i * whiteWf);
+
+                            auto whiteLeft = [&](int i) { return static_cast<float>(edge[i]) - drift[i]; };
+                            auto whiteRight = [&](int i) { return static_cast<float>(edge[i + 1]) - drift[i + 1]; };
+                            auto whiteW = [&](int /*i*/) { return whiteWf; };
+
+                            static float kWhiteOffsetByPC[12] = { -0.01f,0.0f,+0.01f,0.0f, -0.005f,-0.01f,0.0f,+0.01f, 0.0f,-0.005f,0.0f,0.0f };
+                            static float kWhiteScaleByPC[12] = { 1,1,1,1,1,1,1,1,1,1,1,1 };
+                            static float kBlackOffsetByPC[12] = { 0.0f,-0.05f,0.0f,+0.05f, 0.0f,0.0f,-0.09f,0.0f, 0.0f,0.0f,+0.05f,0.0f };
+
+                            const float whiteH = r.H();
+                            const float bh = 0.60f * whiteH;
+                            const float wAvg = whiteWf;
+
+                            auto isAssigned = [&](int note)->bool {
+                                return std::find(sampleNotes.begin(), sampleNotes.end(), note) != sampleNotes.end();
+                                };
+
+                            struct KeyRect { float L, R, T, B; int note; bool paint; };
+                            std::vector<KeyRect> blackRectsAll;
+                            blackRectsAll.reserve(64);
+
+                            // Черные клавиши – соберём их прямоугольники
+                            for (int note = kMinNote; note <= kMaxNote; ++note) {
+                                if (!isBlack(note)) continue;
+                                const int prevWhiteIdx = whiteIndex(note);
+                                if (prevWhiteIdx <= 0 || prevWhiteIdx >= nWhites) continue;
+
+                                const float boundaryX = whiteRight(prevWhiteIdx - 1);
+                                const int pc = note % 12;
+                                const float centerX = boundaryX + kBlackOffsetByPC[pc] * wAvg;
+                                const float bw = 0.63f * wAvg;
+
+                                IRECT kk(centerX - 0.5f * bw, r.T, centerX + 0.5f * bw, r.T + bh + 1.5f);
+                                kk = kk.GetPadded(-1.f).GetPixelAligned();
+                                blackRectsAll.push_back({ kk.L, kk.R, kk.T, kk.B, note, isAssigned(note) });
+                            }
+
+                            // Белые клавиши – рисуем с учетом перекрытия чёрными
+                            for (int note : sampleNotes) {
+                                if (note < kMinNote || note > kMaxNote) continue;
+                                if (isBlack(note)) continue;
+
+                                const int wIdx = whiteIndex(note);
+                                const int pc = note % 12;
+
+                                const float L = whiteLeft(wIdx);
+                                const float R = whiteRight(wIdx);
+                                const float Ww = whiteW(wIdx);
+                                const float cx = 0.5f * (L + R) + kWhiteOffsetByPC[pc] * Ww;
+                                const float ww = Ww * kWhiteScaleByPC[pc];
+
+                                IRECT wrect(cx - 0.5f * ww, r.T, cx + 0.5f * ww, r.B);
+                                wrect = wrect.GetPadded(-1.f).GetPixelAligned();
+
+                                struct Interval { float a, b; };
+                                std::vector<Interval> cover;
+                                cover.reserve(3);
+
+                                for (const auto& br : blackRectsAll) {
+                                    const float a = std::max(wrect.L, br.L);
+                                    const float b = std::min(wrect.R, br.R);
+                                    const bool yOverlap = (br.T < wrect.B) && (br.B > wrect.T);
+                                    if (yOverlap && a < b) cover.push_back({ a,b });
+                                }
+
+                                if (cover.size() > 1) {
+                                    std::sort(cover.begin(), cover.end(), [](auto& x, auto& y) { return x.a < y.a; });
+                                    std::vector<Interval> merged;
+                                    for (auto& iv : cover) {
+                                        if (merged.empty() || iv.a > merged.back().b) merged.push_back(iv);
+                                        else merged.back().b = std::max(merged.back().b, iv.b);
+                                    }
+                                    cover.swap(merged);
+                                }
+
+                                if (wrect.T + bh < wrect.B) {
+                                    IRECT bottom(wrect.L, wrect.T + bh, wrect.R, wrect.B);
+                                    g.FillRect(colorWhite(note), bottom);
+                                }
+
+                                const float topY = wrect.T;
+                                const float botY = std::min(wrect.T + bh, wrect.B);
+                                auto drawSlice = [&](float a, float b) {
+                                    if (a < b) g.FillRect(colorWhite(note), IRECT(a, topY, b, botY));
+                                    };
+
+                                if (botY > topY) {
+                                    float cursor = wrect.L;
+                                    for (auto& iv : cover) {
+                                        drawSlice(cursor, iv.a);
+                                        cursor = std::max(cursor, iv.b);
+                                    }
+                                    drawSlice(cursor, wrect.R);
+                                }
+                            }
+
+                            for (const auto& br : blackRectsAll) {
+                                if (!br.paint) continue;
+                                g.FillRect(colorBlack(br.note), IRECT(br.L, br.T, br.R, br.B));
+                            }
+                        }),
+                    kCtrlTagKeyboardOverlay);
+
+                // по умолчанию показать; потом можно .Hide(true/false)
+                pKBOverlay->SetIgnoreMouse(true);
+                pKBOverlay->Hide(false);
+            }
+#endif // ENABLE_KB_OVERLAY
+
+
+            // Версия/билд
+            WDL_String buildInfoStr;
+            GetBuildInfoStr(buildInfoStr, __DATE__, __TIME__);
+            pGraphics->AttachControl(new ITextControl(versionBounds, buildInfoStr.Get(), DEFAULT_TEXT.WithAlign(EAlign::Far)), kCtrlTagVersionNumber);
+
+            // Спрайт для пэдов
+            const IBitmap pressedBmp = pGraphics->LoadBitmap(IMG_PUNCH_FN, 1);
+
+            // Геометрия пэдов
+            const IRECT kickRect = IRECT::MakeXYWH(620, 360, 210, 250);
+            const IRECT snareRect = IRECT::MakeXYWH(550, 360, 150, 150);
+            const IRECT tomRect = IRECT::MakeXYWH(812, 400, 150, 100);
+            const IRECT crashRect = IRECT::MakeXYWH(378, 220, 200, 75);
+            const IRECT crashRRect = IRECT::MakeXYWH(875, 245, 200, 75);  // R (подбери позицию под свою картинку)
+            const IRECT rackTom1Rect = IRECT::MakeXYWH(565, 340, 90, 50);  // RackTom1
+            const IRECT rackTom2Rect = IRECT::MakeXYWH(820, 320, 120, 90);  // RackTom2
+
+            pGraphics->AttachControl(new SpritePadButton(kickRect, pressedBmp, kKickNote, "Kick", *this), kCtrlTagKickButton);
+            pGraphics->AttachControl(new SpritePadButton(snareRect, pressedBmp, kSnareNote, "Snare", *this), kCtrlTagSnareButton);
+
+            // >>> ЭТОТ ПЭД ТЕПЕРЬ TOM 3 <<<
+            pGraphics->AttachControl(new SpritePadButton(tomRect, pressedBmp, kTom3Note, "Tom 3", *this), kCtrlTagTomButton);
+
+            pGraphics->AttachControl(new SpritePadButton(crashRect, pressedBmp, kCrashLNote, "Crash L", *this), kCtrlTagCrashLButton);
+            pGraphics->AttachControl(
+                new SpritePadButton(rackTom1Rect, pressedBmp, kTom1Note, "Rack Tom 1", *this),
+                kCtrlTagPadRackTom1Button);
+
+            pGraphics->AttachControl(
+                new SpritePadButton(rackTom2Rect, pressedBmp, kTom2Note, "Rack Tom 2", *this),
+                kCtrlTagPadRackTom2Button);
+
+           
+            pGraphics->AttachControl(new SpritePadButton(crashRRect, pressedBmp, kCrashRNote, "Crash R", *this), kCtrlTagCrashRButton);
+
+            // --- МЕНЮ: три кнопки и три оверлея ---
+            const IBitmap menuBtnBmp = pGraphics->LoadBitmap(IMG_MENU_BUTTON_BG_FN, 1);
+            pGraphics->LoadFont("MenuFont-Regular", IMPACT_FN);
+
+            const IBitmap mappingBmpL = pGraphics->LoadBitmap(IMG_MENU_MAPPING_BG_FN, 1);
+            const IBitmap mixerBmpUnd = pGraphics->LoadBitmap(IMG_MENU_MIXER_BG_UND_FN, 1);
+            const IBitmap mixerBmpFg = pGraphics->LoadBitmap(IMG_MENU_MIXER_BG_FN, 1);
+            const IBitmap mappingBmpR = pGraphics->LoadBitmap(IMG_MENU_MAPPING_BG_FN, 1);
+
+  
+            const IBitmap cymbalsBmpUnd = pGraphics->LoadBitmap(IMG_MENU_CYMBALS_BG_UND_FN, 1);
+            const IBitmap cymbalsBmpFg = pGraphics->LoadBitmap(IMG_MENU_CYMBALS_BG_FN, 1);
+
+
+            const float kMenuBtnScaleL = 0.70f;
+            const float kMenuBtnScaleC = 1.00f;
+            const float kMenuBtnScaleR = 0.70f;
+
+            const float menuCX_L = 350.f, menuCY_L = 840.f;
+            const float menuCX_C = 750.f, menuCY_C = 820.f;
+            const float menuCX_R = 1150.f, menuCY_R = 840.f;
+
+            const IRECT menuRectL = MakeSpriteRectFromCenter(menuBtnBmp, kMenuBtnScaleL, menuCX_L, menuCY_L);
+            const IRECT menuRectC = MakeSpriteRectFromCenter(menuBtnBmp, kMenuBtnScaleC, menuCX_C, menuCY_C);
+            const IRECT menuRectR = MakeSpriteRectFromCenter(menuBtnBmp, kMenuBtnScaleR, menuCX_R, menuCY_R);
+
+            const float mapScaleL = 0.70f;
+            const float mapWL = (float)mappingBmpL.W() * mapScaleL;
+            const float mapHL = (float)mappingBmpL.H() * mapScaleL;
+            const float mapCXL = menuRectL.MW() - 0.f;
+            const float mapCYL = menuRectL.T - 400.f;
+            const IRECT mappingRectL = IRECT::MakeXYWH(mapCXL - 0.5f * mapWL, mapCYL - 0.5f * mapHL, mapWL, mapHL).GetPixelAligned();
+
+            const float mapScaleC = 0.38f;
+            const float mapWC = (float)mixerBmpUnd.W() * mapScaleC;
+            const float mapHC = (float)mixerBmpUnd.H() * mapScaleC;
+            const float mapCXC = menuRectC.MW() - 0.f;
+            const float mapCYC = menuRectC.T - 250.f;
+            const IRECT mixerRectC = IRECT::MakeXYWH(mapCXC - 0.5f * mapWC, mapCYC - 0.5f * mapHC, mapWC, mapHC).GetPixelAligned();
+
+            const float mapScaleR = 0.7f;
+            const float mapWR = (float)mappingBmpR.W() * mapScaleR;
+            const float mapHR = (float)mappingBmpR.H() * mapScaleR;
+            const float mapCXR = menuRectR.MW() - 410.f;
+            const float mapCYR = menuRectR.T - 400.f;
+            const IRECT mappingRectR = IRECT::MakeXYWH(mapCXR - 0.5f * mapWR, mapCYR - 0.5f * mapHR, mapWR, mapHR).GetPixelAligned();
+
+            // размеры картинки
+            const float cymScale = 0.38f;
+            const float cymW = (float)cymbalsBmpFg.W() * cymScale;
+            const float cymH = (float)cymbalsBmpFg.H() * cymScale;
+
+            // офсеты по вашей логике
+            const float xShift = -10.f;
+            const float offClosed = 318.f;
+            const float offOpen = 580.f;
+
+            // состояния ДО/ПОСЛЕ
+            CymbalSlideTrigger::State stClosed =
+                CymbalSlideTrigger::MakeStateFromMenuTop(menuRectC, xShift, offClosed, cymW, cymH);
+            CymbalSlideTrigger::State stOpen =
+                CymbalSlideTrigger::MakeStateFromMenuTop(menuRectC, xShift, offOpen, cymW, cymH);
+
+            // ВМЕСТО cymCX/cymCY строим стартовый прямоугольник из stClosed:
+            const IRECT cymRect = IRECT::MakeXYWH(stClosed.cx - 0.5f * stClosed.w,
+                stClosed.cy - 0.5f * stClosed.h,
+                stClosed.w, stClosed.h).GetPixelAligned();
+
+            // --- CYMBALS overlays (UNDER/FG) ---
+            auto* pCymOverlayUnd = pGraphics->AttachControl(
+                new MappingOverlayControl(pGraphics->GetBounds(), cymbalsBmpUnd, cymRect)
+            )->As<MappingOverlayControl>();
+
+            auto* pCymOverlayFg = pGraphics->AttachControl(
+                new MappingOverlayControl(pGraphics->GetBounds(), cymbalsBmpFg, cymRect)
+            )->As<MappingOverlayControl>();
+
+            // конфиг триггера (независимый хитбокс, если нужно)
+            CymbalSlideTrigger::TriggerBox trigCfg;
+            trigCfg.w = 280.f;
+            trigCfg.h = 58.f;
+            trigCfg.dx = 0.f;
+            trigCfg.dy = -152.f;
+
+            // по умолчанию — скрыты и «сквозные»
+            pCymOverlayUnd->Hide(true); pCymOverlayUnd->SetIgnoreMouse(true);
+            pCymOverlayFg->Hide(true);  pCymOverlayFg->SetIgnoreMouse(true);
+
+
+           
+           
+
+            auto* pOverlayL = pGraphics->AttachControl(
+                new MappingOverlayControl(pGraphics->GetBounds(), mappingBmpL, mappingRectL))
+                ->As<MappingOverlayControl>();
+
+            auto* pOverlayCUnd = pGraphics->AttachControl(
+                new MappingOverlayControl(pGraphics->GetBounds(), mixerBmpUnd, mixerRectC))
+                ->As<MappingOverlayControl>();
+
+            auto* pOverlayR = pGraphics->AttachControl(
+                new MappingOverlayControl(pGraphics->GetBounds(), mappingBmpR, mappingRectR))
+                ->As<MappingOverlayControl>();
+            
+
+            // ===== МЕТРЫ (все ДО foreground) =====
+            // Битмапы ручек (для геометрии и повторного использования)
+            const IBitmap kickHandleBmp = pGraphics->LoadBitmap(IMG_SLIDER_HANDLE_FN, 1);
+            const IBitmap snareHandleBmp = pGraphics->LoadBitmap(IMG_SLIDER_HANDLE_01_FN, 1);
+            const IBitmap tomHandleBmp = pGraphics->LoadBitmap(IMG_SLIDER_HANDLE_02_FN, 1);
+            const IBitmap tomHandleBmp23 = pGraphics->LoadBitmap(IMG_SLIDER_HANDLE_03_FN, 1);
+            const IBitmap roomsHandleBmp = pGraphics->LoadBitmap(IMG_SLIDER_HANDLE_04_FN, 1); // <- для ROOMS
+            const IBitmap masterHandleBmp = pGraphics->LoadBitmap(IMG_SLIDER_HANDLE_05_FN, 1); // NEW: MASTER
+
+            const float x = 110.f;
+            const float y = 387.f;
+            const float travel = 107.f;
+
+            // KICK геометрия
+            const float wKick = (float)kickHandleBmp.W();
+            const float hKick = travel + (float)kickHandleBmp.H();
+            const IRECT sliderKickBox = IRECT::MakeXYWH(x, y, wKick, hKick).GetPadded(1.f);
+
+            IVStyle meterStyle;
+            meterStyle = meterStyle
+                .WithShowLabel(false)
+                .WithShowValue(false)
+                .WithDrawFrame(false)
+                .WithDrawShadows(false)
+                .WithColor(kBG, COLOR_TRANSPARENT)
+                .WithColor(kFR, IColor(255, 8, 8, 8))
+                .WithColor(kFG, IColor(255, 0, 232, 38))
+                .WithColor(kX1, COLOR_TRANSPARENT);
+
+            const float meterGap = -134.f; // базовый (для кика/снейра)
+            const float meterW = 24.f;
+            const float meterH_k = 0.70f;
+            const float meterTopShift = 0.f;
+
+            const float meterH = sliderKickBox.H() * meterH_k;
+            const float meterTop = sliderKickBox.MH() - 0.5f * meterH + meterTopShift;
+            const IRECT meterRect = IRECT::MakeXYWH(sliderKickBox.R + meterGap, meterTop, meterW, meterH).GetPixelAligned();
+
+            // KICK meter
+            IControl* pKickMeter = pGraphics->AttachControl(
+                new IVPeakAvgMeterControl<2>(meterRect, "", meterStyle, EDirection::Vertical /*, {"L","R"}*/),
+                kCtrlTagMeter);
+            pKickMeter->Hide(true);
+            pKickMeter->SetDirty(false);
+
+            // SNARE геометрия
+            const float xS = x + 228.f;
+            const float wSnare = (float)snareHandleBmp.W();
+            const float hSnare = travel + (float)snareHandleBmp.H();
+
+            const IRECT sliderBoundsSn_tmp = IRECT::MakeXYWH(xS, y, wSnare * 0.5f, hSnare);
+            const float snMeterH = meterH;
+            const float snMeterTop = sliderBoundsSn_tmp.MH() - 0.5f * snMeterH + meterTopShift;
+            const IRECT snMeterRect = IRECT::MakeXYWH(sliderBoundsSn_tmp.R + meterGap, snMeterTop, meterW, snMeterH).GetPixelAligned();
+
+            IControl* pSnareMeter = pGraphics->AttachControl(
+                new IVPeakAvgMeterControl<2>(snMeterRect, "", meterStyle, EDirection::Vertical),
+                kCtrlTagSnareMeter);
+            pSnareMeter->Hide(true);
+            pSnareMeter->SetDirty(false);
+
+            // ===== TOM METERS (под foreground) =====
+            const float xKick = x;              // 110
+            const float xSnare = x + 128.f;     // базовая X снейра
+            const float DX = 128.f;             // шаг по X
+
+            const float wTom = (float)tomHandleBmp.W();
+            const float hTom = travel + (float)tomHandleBmp.H();
+            const float wTom23 = (float)tomHandleBmp23.W();
+            const float hTom23 = travel + (float)tomHandleBmp23.H();
+
+            float handleScale = 0.5f; // нужен ниже и для слайдеров
+            const float handlewTom = wTom * handleScale;
+            const float handlewTom23 = wTom23 * handleScale;
+
+            auto MakeMeterForSliderBoxGap = [&](const IRECT& sliderBox, float gap) -> IRECT
+                {
+                    const float h = meterH;
+                    const float top = sliderBox.MH() - 0.5f * h + meterTopShift;
+                    return IRECT::MakeXYWH(sliderBox.R + gap, top, meterW, h).GetPixelAligned();
+                };
+
+            // геометрия «бокс-слайдеров» (только для расчёта метеров)
+            const float xTom1 = xSnare + DX * 1.f;
+            const IRECT sliderBoundsTom1_e = IRECT::MakeXYWH(xTom1, y, handlewTom, hTom);
+
+            const float xTom2 = xSnare + DX * 2.f;
+            const IRECT sliderBoundsTom2_e = IRECT::MakeXYWH(xTom2, y, handlewTom, hTom);
+
+            const float xTom3 = xSnare + DX * 3.f;
+            const IRECT sliderBoundsTom3_e = IRECT::MakeXYWH(xTom3, y, handlewTom, hTom);
+
+            const float gapTom1 = -34, gapTom2 = -34, gapTom3 = -34;
+
+            // метеры томов
+            const IRECT tom1MeterRect = MakeMeterForSliderBoxGap(sliderBoundsTom1_e, gapTom1);
+            IControl* pTom1Meter = pGraphics->AttachControl(
+                new IVPeakAvgMeterControl<2>(tom1MeterRect, "", meterStyle, EDirection::Vertical),
+                kCtrlTagTom1Meter);
+            pTom1Meter->Hide(true); pTom1Meter->SetDirty(false);
+
+            const IRECT tom2MeterRect = MakeMeterForSliderBoxGap(sliderBoundsTom2_e, gapTom2);
+            IControl* pTom2Meter = pGraphics->AttachControl(
+                new IVPeakAvgMeterControl<2>(tom2MeterRect, "", meterStyle, EDirection::Vertical),
+                kCtrlTagTom2Meter);
+            pTom2Meter->Hide(true); pTom2Meter->SetDirty(false);
+
+            const IRECT tom3MeterRect = MakeMeterForSliderBoxGap(sliderBoundsTom3_e, gapTom3);
+            IControl* pTom3Meter = pGraphics->AttachControl(
+                new IVPeakAvgMeterControl<2>(tom3MeterRect, "", meterStyle, EDirection::Vertical),
+                kCtrlTagTom3Meter);
+            pTom3Meter->Hide(true); pTom3Meter->SetDirty(false);
+
+            // ===== CYMBALS/ROOMS METERS (сразу после томов, до FG) =====
+            const float xCym = xSnare + DX * 4.f;
+            const IRECT sliderBoundsCym_e = IRECT::MakeXYWH(xCym, y, handlewTom23, hTom23);
+
+            const float xRooms = xSnare + DX * 5.f;
+            // для rooms эмулируем «бокс» по размеру своей ручки, чтобы метер совпадал визуально
+            const float handlewRooms_e = (float)roomsHandleBmp.W() * handleScale;
+            const float hRooms_e = travel + (float)roomsHandleBmp.H();
+            const IRECT sliderBoundsRooms_e = IRECT::MakeXYWH(xRooms, y, handlewRooms_e, hRooms_e);
+
+            const float gapCym = -34;
+            const float gapRooms = -34;
+
+            const IRECT cymMeterRect = MakeMeterForSliderBoxGap(sliderBoundsCym_e, gapCym);
+            const IRECT roomsMeterRect = MakeMeterForSliderBoxGap(sliderBoundsRooms_e, gapRooms);
+
+            IControl* pCymbalsMeter = pGraphics->AttachControl(
+                new IVPeakAvgMeterControl<2>(cymMeterRect, "", meterStyle, EDirection::Vertical),
+                kCtrlTagCymbalsMeter);
+            pCymbalsMeter->Hide(true); pCymbalsMeter->SetDirty(false);
+
+            IControl* pRoomsMeter = pGraphics->AttachControl(
+                new IVPeakAvgMeterControl<2>(roomsMeterRect, "", meterStyle, EDirection::Vertical),
+                kCtrlTagRoomsMeter);
+            pRoomsMeter->Hide(true); pRoomsMeter->SetDirty(false);
+
+            // ===== MASTER METER (сразу после ROOMS, до FG) =====
+            const float xMaster = xSnare + DX * 8.f + 13.f; // продолжение шага
+            // независимые настройки ТОЛЬКО для master meter:
+            static float gMasterMeterY = 450.f;  // <-- редактируемая абсолютная Y-позиция
+            static float gMasterMeterH = 230.f;  // <-- редактируемая высота в пикселях
+
+            const float MmeterW = 24.f;           // ширина метеров оставляем той же
+            const float gapMaster = -34.f;       // горизонтальный отступ от правого края «бокса» слайдера master
+
+            // «Бокс» master-слайдера лишь для выравнивания X-координаты метра
+            const float handlewMaster_e = (float)masterHandleBmp.W() * handleScale;
+            const float hMaster_e = travel + (float)masterHandleBmp.H();
+            const IRECT sliderBoundsMaster_e = IRECT::MakeXYWH(xMaster, y, handlewMaster_e, hMaster_e);
+
+            // !!! ВАЖНО: Y и H берём из gMasterMeterY / gMasterMeterH, независимы от других !!!
+            const IRECT masterMeterRect = IRECT::MakeXYWH(
+                sliderBoundsMaster_e.R + gapMaster, // X — как у остальных (от «бокса»)
+                gMasterMeterY,                       // Y — независимый
+                MmeterW,                              // W — как у остальных (можно тоже вынести при желании)
+                gMasterMeterH                        // H — независимая высота
+            ).GetPixelAligned();
+
+            IControl* pMasterMeter = pGraphics->AttachControl(
+                new IVPeakAvgMeterControl<2>(masterMeterRect, "", meterStyle, EDirection::Vertical),
+                kCtrlTagMasterMeter);
+            pMasterMeter->Hide(true); pMasterMeter->SetDirty(false);
+
+            // ===== FOREGROUND MIXER (картинка поверх) =====
+            auto* pOverlayC = pGraphics->AttachControl(
+                new MappingOverlayControl(pGraphics->GetBounds(), mixerBmpFg, mixerRectC),
+                kCtrlTagMappingOverlay
+            )->As<MappingOverlayControl>();
+
+            // сам триггер (после FG/UND, чтобы можно было линковать)
+            auto* pCymTrigger = pGraphics->AttachControl(
+                new CymbalSlideTrigger(pCymOverlayUnd, pCymOverlayFg, stClosed, stOpen, trigCfg, 180.0),
+                kCtrlTagCymbalsTrigger
+            )->As<CymbalSlideTrigger>();
+            pCymTrigger->Hide(true);
+
+            // 1) FG (mixer) кликается только по своей картинке и сам не закрывается
+            pOverlayC->SetHitTestImageOnly(true);
+            pOverlayC->SetCloseOnOutside(false);
+
+            // 2) UND (mixer) закрывается снаружи, но имеет safe-зоны: FG микшера + FG цимбалов
+            pOverlayCUnd->ClearNoCloseRects();
+            pOverlayCUnd->AddNoCloseRectProvider([pOverlayC]() { return pOverlayC->GetImageRect(); });
+            pOverlayCUnd->AddNoCloseRectProvider([pCymOverlayFg]() { return pCymOverlayFg->GetImageRect(); });
+
+            // >>> NEW: когда микшер закрывается кликом «вне», сворачиваем «cymbals»
+            pOverlayCUnd->SetOnAutoClose([pGraphics]() {
+                if (auto* trig = pGraphics->GetControlWithTag(kCtrlTagCymbalsTrigger))
+                    trig->As<CymbalSlideTrigger>()->SetOpen(false, /*noAnim*/ true);
+                });
+
+            // По умолчанию спрятаны все оверлеи
+            pOverlayL->Hide(true);
+            pOverlayCUnd->Hide(true);
+            pOverlayC->Hide(true);
+            pOverlayR->Hide(true);
+
+            // Чтобы триггер показывался/прятался вместе с MIXER:
+            pOverlayC->LinkControl(pCymTrigger);
+            pOverlayCUnd->LinkControl(pCymTrigger);
+            // По умолчанию спрятаны все оверлеи
+            pOverlayL->Hide(true);
+            pOverlayCUnd->Hide(true);
+            pOverlayC->Hide(true);
+            pOverlayR->Hide(true);
+
+
+            // --- КНОПКИ ---
+            const IText textStyleL(50.f, COLOR_WHITE, "MenuFont-Regular", EAlign::Center, EVAlign::Middle);
+            const IText textStyleC(80.f, COLOR_WHITE, "MenuFont-Regular", EAlign::Center, EVAlign::Middle);
+            const IText textStyleR(50.f, COLOR_WHITE, "MenuFont-Regular", EAlign::Center, EVAlign::Middle);
+
+            WDL_String labelL("MAPPING");
+            WDL_String labelC("MIXER");
+            WDL_String labelR("ABOUT");
+
+            auto* pMenuBtnL = pGraphics->AttachControl(new LabeledSpriteToggleButton(menuRectL, menuBtnBmp, labelL, textStyleL, "Menu L"));
+            auto* pMenuBtnC = pGraphics->AttachControl(new LabeledSpriteToggleButton(menuRectC, menuBtnBmp, labelC, textStyleC, "Menu C"), kCtrlTagMenuButton);
+            auto* pMenuBtnR = pGraphics->AttachControl(new LabeledSpriteToggleButton(menuRectR, menuBtnBmp, labelR, textStyleR, "Menu R"));
+
+            // Связки
+            pOverlayL->SetMenuButton(pMenuBtnL);
+            pOverlayCUnd->SetMenuButton(pMenuBtnC);
+            pOverlayC->SetMenuButton(pMenuBtnC);
+            pOverlayR->SetMenuButton(pMenuBtnR);
+
+
+            // === ЭЛЕМЕНТЫ MIXER НАД FOREGROUND ===
+            const double kMaxDB = 20.0 * std::log10(1.5);
+            const double kMinDB = 20.0 * std::log10(1e-6);
+
+            // KICK slider/text
+            const float handleScaleUI = 0.5f;
+            const float handlewKickUI = (float)kickHandleBmp.W() * handleScaleUI;
+            const IRECT sliderBounds = IRECT::MakeXYWH(x, y, handlewKickUI, travel + (float)kickHandleBmp.H());
+            IRECT travelRect = sliderBounds;
+
+            auto* pMixSlider = pGraphics->AttachControl(
+                new BitmapHandleVSlider(sliderBounds, kickHandleBmp, travelRect, handleScaleUI, kCtrlTagKickValueText),
+                kCtrlTagMixerSlider);
+            pMixSlider->Hide(true);
+            pMixSlider->SetDirty(false);
+
+            const float kKickTextX = 150.f;
+            const float kKickTextY = 400.f;
+            const float kKickTextW = 60.f;
+            const float kKickTextH = 22.f;
+
+            const IRECT textRect = IRECT::MakeXYWH(kKickTextX, kKickTextY, kKickTextW, kKickTextH).GetPixelAligned();
+            auto* pKickText = pGraphics->AttachControl(
+                new KickDBEditableText(textRect, "0.0 dB",
+                    IText(14.0, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle, 0.0)),
+                kCtrlTagKickValueText);
+            pKickText->Hide(true);
+            pKickText->SetDirty(false);
+
+            // SNARE slider/text
+            const float handlewSn = (float)snareHandleBmp.W() * handleScaleUI;
+            const IRECT sliderBoundsSn = IRECT::MakeXYWH(x + 128.f, y, handlewSn, travel + (float)snareHandleBmp.H());
+            auto* pSnareSlider = pGraphics->AttachControl(
+                new BitmapHandleVSlider(sliderBoundsSn, snareHandleBmp, sliderBoundsSn, handleScaleUI, kCtrlTagSnareValueText),
+                kCtrlTagSnareSlider);
+            pSnareSlider->Hide(true);
+            pSnareSlider->SetDirty(false);
+
+            const IRECT snTextRect = IRECT::MakeXYWH(kKickTextX + 128.f, kKickTextY, kKickTextW, kKickTextH).GetPixelAligned();
+            auto* pSnareText = pGraphics->AttachControl(
+                new KickDBEditableText(snTextRect, "0.0 dB",
+                    IText(14.0, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle, 0.0)),
+                kCtrlTagSnareValueText);
+            pSnareText->Hide(true);
+            pSnareText->SetDirty(false);
+
+            // === ЛОВУШКА КЛИКОВ (скрывает поля ввода) ===
+            auto* pClickCatcher = pGraphics->AttachControl(
+                new ClickDismissLayer(pGraphics->GetBounds()),
+                kCtrlTagClickCatcher);
+            pClickCatcher->Hide(true);
+            pClickCatcher->SetDirty(false);
+
+            // ====== TOM_01 / TOM_02 / TOM_03 (над foreground: слайдеры/тексты) ======
+            const float editW = kKickTextW;
+            const float editH = kKickTextH;
+            const float textY = kKickTextY;
+
+            // базовые координаты
+            const float xSnareUI = x + 128.f;
+            const float DXUI = 128.f;
+
+            // TOM_01
+            const float xTom1_s = xSnareUI + DXUI * 1.f;
+            const IRECT sliderBoundsTom1 = IRECT::MakeXYWH(xTom1, y, (float)tomHandleBmp.W() * handleScale, travel + (float)tomHandleBmp.H());
+            auto* pTom1Slider = pGraphics->AttachControl(
+                new BitmapHandleVSlider(sliderBoundsTom1, tomHandleBmp, sliderBoundsTom1, handleScale, kCtrlTagTom1ValueText),
+                kCtrlTagTom1Slider);
+            pTom1Slider->Hide(true); pTom1Slider->SetDirty(false);
+
+            const IRECT tom1TextRect = IRECT::MakeXYWH(kKickTextX + (xTom1_s - xKick), textY, editW, editH).GetPixelAligned();
+            auto* pTom1Text = pGraphics->AttachControl(
+                new KickDBEditableText(tom1TextRect, "0.0 dB",
+                    IText(14.0, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle, 0.0)),
+                kCtrlTagTom1ValueText);
+            pTom1Text->Hide(true); pTom1Text->SetDirty(false);
+
+            // TOM_02
+            const float xTom2_s = xSnareUI + DXUI * 2.f;
+            const IRECT sliderBoundsTom2 = IRECT::MakeXYWH(xTom2, y, (float)tomHandleBmp23.W() * handleScale, travel + (float)tomHandleBmp23.H());
+            auto* pTom2Slider = pGraphics->AttachControl(
+                new BitmapHandleVSlider(sliderBoundsTom2, tomHandleBmp23, sliderBoundsTom2, handleScale, kCtrlTagTom2ValueText),
+                kCtrlTagTom2Slider);
+            pTom2Slider->Hide(true); pTom2Slider->SetDirty(false);
+
+            const IRECT tom2TextRect = IRECT::MakeXYWH(kKickTextX + (xTom2_s - xKick), textY, editW, editH).GetPixelAligned();
+            auto* pTom2Text = pGraphics->AttachControl(
+                new KickDBEditableText(tom2TextRect, "0.0 dB",
+                    IText(14.0, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle, 0.0)),
+                kCtrlTagTom2ValueText);
+            pTom2Text->Hide(true); pTom2Text->SetDirty(false);
+
+            // TOM_03
+            const float xTom3_s = xSnareUI + DXUI * 3.f;
+            const IRECT sliderBoundsTom3 = IRECT::MakeXYWH(xTom3, y, (float)tomHandleBmp23.W() * handleScale, travel + (float)tomHandleBmp23.H());
+            auto* pTom3Slider = pGraphics->AttachControl(
+                new BitmapHandleVSlider(sliderBoundsTom3, tomHandleBmp23, sliderBoundsTom3, handleScale, kCtrlTagTom3ValueText),
+                kCtrlTagTom3Slider);
+            pTom3Slider->Hide(true); pTom3Slider->SetDirty(false);
+
+            const IRECT tom3TextRect = IRECT::MakeXYWH(kKickTextX + (xTom3_s - xKick), textY, editW, editH).GetPixelAligned();
+            auto* pTom3Text = pGraphics->AttachControl(
+                new KickDBEditableText(tom3TextRect, "0.0 dB",
+                    IText(14.0, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle, 0.0)),
+                kCtrlTagTom3ValueText);
+            pTom3Text->Hide(true); pTom3Text->SetDirty(false);
+
+            // === CYMBALS (Crash) ===
+            const IRECT sliderBoundsCym = IRECT::MakeXYWH(xCym, y, (float)tomHandleBmp23.W() * handleScale, travel + (float)tomHandleBmp23.H());
+            auto* pCymSlider = pGraphics->AttachControl(
+                new BitmapHandleVSlider(sliderBoundsCym, tomHandleBmp23, sliderBoundsCym, handleScale, kCtrlTagCymbalsValueText),
+                kCtrlTagCymbalsSlider);
+            pCymSlider->Hide(true); pCymSlider->SetDirty(false);
+
+            const IRECT cymTextRect = IRECT::MakeXYWH(kKickTextX + (xCym - xKick), textY, editW, editH).GetPixelAligned();
+            auto* pCymText = pGraphics->AttachControl(
+                new KickDBEditableText(cymTextRect, "0.0 dB",
+                    IText(14.0, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle, 0.0)),
+                kCtrlTagCymbalsValueText);
+            pCymText->Hide(true); pCymText->SetDirty(false);
+
+            // === ROOMS (Snare Room + Tom Room суммарно) — СВОЙ handle ===
+            const float handlewRooms = (float)roomsHandleBmp.W() * handleScale;
+            const float hRooms = travel + (float)roomsHandleBmp.H();
+            const IRECT sliderBoundsRooms = IRECT::MakeXYWH(xRooms, y, handlewRooms, hRooms);
+            auto* pRoomsSlider = pGraphics->AttachControl(
+                new BitmapHandleVSlider(sliderBoundsRooms, roomsHandleBmp, sliderBoundsRooms, handleScale, kCtrlTagRoomsValueText),
+                kCtrlTagRoomsSlider);
+            pRoomsSlider->Hide(true); pRoomsSlider->SetDirty(false);
+
+            const IRECT roomsTextRect = IRECT::MakeXYWH(kKickTextX + (xRooms - xKick), textY, editW, editH).GetPixelAligned();
+            auto* pRoomsText = pGraphics->AttachControl(
+                new KickDBEditableText(roomsTextRect, "0.0 dB",
+                    IText(14.0, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle, 0.0)),
+                kCtrlTagRoomsValueText);
+            pRoomsText->Hide(true); pRoomsText->SetDirty(false);
+
+            // === MASTER — reuse rooms-хэндл для согласованности ===
+            const IRECT sliderBoundsMaster = IRECT::MakeXYWH(xMaster, y, handlewRooms, hRooms);
+            auto* pMasterSlider = pGraphics->AttachControl(
+                new BitmapHandleVSlider(sliderBoundsMaster, masterHandleBmp, sliderBoundsMaster, handleScale, kCtrlTagMasterValueText),
+                kCtrlTagMasterSlider);
+            pMasterSlider->Hide(true); pMasterSlider->SetDirty(false);
+
+            const IRECT masterTextRect = IRECT::MakeXYWH(kKickTextX + (xMaster - xKick), 400.f, editW, editH).GetPixelAligned();
+            auto* pMasterText = pGraphics->AttachControl(
+                new KickDBEditableText(masterTextRect, "0.0 dB",
+                    IText(14.0, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle, 0.0)),
+                kCtrlTagMasterValueText);
+            pMasterText->Hide(true); pMasterText->SetDirty(false);
+
+            // Линкуем к MIXER overlays (все виджеты, включая новые)
+            pOverlayC->LinkControl(pKickMeter);
+            pOverlayC->LinkControl(pSnareMeter);
+            pOverlayC->LinkControl(pMixSlider);
+            pOverlayC->LinkControl(pSnareSlider);
+            pOverlayC->LinkControl(pKickText);
+            pOverlayC->LinkControl(pSnareText);
+            pOverlayC->LinkControl(pOverlayCUnd);
+
+            pOverlayC->LinkControl(pTom1Meter); pOverlayC->LinkControl(pTom1Slider); pOverlayC->LinkControl(pTom1Text);
+            pOverlayC->LinkControl(pTom2Meter); pOverlayC->LinkControl(pTom2Slider); pOverlayC->LinkControl(pTom2Text);
+            pOverlayC->LinkControl(pTom3Meter); pOverlayC->LinkControl(pTom3Slider); pOverlayC->LinkControl(pTom3Text);
+
+            pOverlayC->LinkControl(pCymbalsMeter); pOverlayC->LinkControl(pCymSlider); pOverlayC->LinkControl(pCymText);
+            pOverlayC->LinkControl(pRoomsMeter);   pOverlayC->LinkControl(pRoomsSlider); pOverlayC->LinkControl(pRoomsText);
+
+            // NEW — master
+            pOverlayC->LinkControl(pMasterMeter);  pOverlayC->LinkControl(pMasterSlider);  pOverlayC->LinkControl(pMasterText);
+            pOverlayC->LinkControl(pCymOverlayUnd);
+            pOverlayC->LinkControl(pCymOverlayFg);
+
+            pOverlayCUnd->LinkControl(pKickMeter);
+            pOverlayCUnd->LinkControl(pSnareMeter);
+            pOverlayCUnd->LinkControl(pMixSlider);
+            pOverlayCUnd->LinkControl(pSnareSlider);
+            pOverlayCUnd->LinkControl(pKickText);
+            pOverlayCUnd->LinkControl(pSnareText);
+            pOverlayCUnd->LinkControl(pOverlayC);
+
+            pOverlayCUnd->LinkControl(pTom1Meter); pOverlayCUnd->LinkControl(pTom1Slider); pOverlayCUnd->LinkControl(pTom1Text);
+            pOverlayCUnd->LinkControl(pTom2Meter); pOverlayCUnd->LinkControl(pTom2Slider); pOverlayCUnd->LinkControl(pTom2Text);
+            pOverlayCUnd->LinkControl(pTom3Meter); pOverlayCUnd->LinkControl(pTom3Slider); pOverlayCUnd->LinkControl(pTom3Text);
+
+            pOverlayCUnd->LinkControl(pCymbalsMeter); pOverlayCUnd->LinkControl(pCymSlider); pOverlayCUnd->LinkControl(pCymText);
+            pOverlayCUnd->LinkControl(pRoomsMeter);   pOverlayCUnd->LinkControl(pRoomsSlider); pOverlayCUnd->LinkControl(pRoomsText);
+            pOverlayCUnd->LinkControl(pCymOverlayUnd);
+            pOverlayCUnd->LinkControl(pCymOverlayFg);
+
+
+            // NEW — master
+            pOverlayCUnd->LinkControl(pMasterMeter);  pOverlayCUnd->LinkControl(pMasterSlider);  pOverlayCUnd->LinkControl(pMasterText);
+
+            // --- Функция синка dB-строки ---
+            auto SyncTextFromSlider = [&](IControl* pSld, IControl* pText)
+                {
+                    if (!pSld || !pText) return;
+                    const double v = pSld->GetValue();
+                    const double g = std::max(GainFromV(v), kMinGain);
+                    const double dB = 20.0 * std::log10(g);
+                    WDL_String s; FormatDBString(s, dB);
+                    pText->As<IEditableTextControl>()->SetStr(s.Get());
+                    pText->SetDirty(false);
+                };
+
+            // Подхватываем текущие значения параметров
+            pMixSlider->SetValue((float)GetParam(kParamKick)->GetNormalized());
+            pSnareSlider->SetValue((float)GetParam(kParamSnare)->GetNormalized());
+            SyncTextFromSlider(pMixSlider, pKickText);
+            SyncTextFromSlider(pSnareSlider, pSnareText);
+
+            // тома
+            pTom1Slider->SetValue((float)GetParam(kParamTom1)->GetNormalized());
+            pTom2Slider->SetValue((float)GetParam(kParamTom2)->GetNormalized());
+            pTom3Slider->SetValue((float)GetParam(kParamTom3)->GetNormalized());
+            SyncTextFromSlider(pTom1Slider, pTom1Text);
+            SyncTextFromSlider(pTom2Slider, pTom2Text);
+            SyncTextFromSlider(pTom3Slider, pTom3Text);
+
+            // cymbals/rooms
+            pCymSlider->SetValue((float)GetParam(kParamCymbals)->GetNormalized());
+            pRoomsSlider->SetValue((float)GetParam(kParamRooms)->GetNormalized());
+            SyncTextFromSlider(pCymSlider, pCymText);
+            SyncTextFromSlider(pRoomsSlider, pRoomsText);
+
+            // master
+            pMasterSlider->SetValue((float)GetParam(kParamMaster)->GetNormalized());
+            SyncTextFromSlider(pMasterSlider, pMasterText);
+
+            // Action: KICK slider
+            pMixSlider->SetActionFunction([=](IControl* cc)
+                {
+                    const double v = cc->GetValue();
+                    GetParam(kParamKick)->SetNormalized(v);
+                    SendParameterValueFromUI(kParamKick, v);
+                    const double gain = std::max(GainFromV(v), kMinGain);
+                    gKit.SetGainTag("kick", (float)gain);
+
+                    const double dB = 20.0 * std::log10(gain);
+                    if (auto* ui = cc->GetUI())
+                    {
+                        if (auto* t = ui->GetControlWithTag(kCtrlTagKickValueText))
+                        {
+                            WDL_String s; FormatDBString(s, dB);
+                            t->As<IEditableTextControl>()->SetStr(s.Get());
+                            t->SetDirty(false);
+                        }
+                    }
+                });
+
+            // Action: SNARE slider
+            pSnareSlider->SetActionFunction([=](IControl* cc)
+                {
+                    const double v = cc->GetValue();
+                    GetParam(kParamSnare)->SetNormalized(v);
+                    SendParameterValueFromUI(kParamSnare, v);
+                    const double gain = std::max(GainFromV(v), kMinGain);
+                    gKit.SetGainTag("snare_close", (float)gain);
+
+                    const double dB = 20.0 * std::log10(gain);
+                    if (auto* ui = cc->GetUI())
+                    {
+                        if (auto* t = ui->GetControlWithTag(kCtrlTagSnareValueText))
+                        {
+                            WDL_String s; FormatDBString(s, dB);
+                            t->As<IEditableTextControl>()->SetStr(s.Get());
+                            t->SetDirty(false);
+                        }
+                    }
+                });
+
+            // Action: TOM sliders
+            pTom1Slider->SetActionFunction([=](IControl* cc) {
+                const double v = cc->GetValue();
+                GetParam(kParamTom1)->SetNormalized(v);
+                SendParameterValueFromUI(kParamTom1, v);
+                const double gain = std::max(GainFromV(v), kMinGain);
+                gKit.SetGainTag("tom01_close", (float)gain);
+                if (auto* ui = cc->GetUI())
+                    if (auto* t = ui->GetControlWithTag(kCtrlTagTom1ValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gain)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
+                });
+
+            pTom2Slider->SetActionFunction([=](IControl* cc) {
+                const double v = cc->GetValue();
+                GetParam(kParamTom2)->SetNormalized(v);
+                SendParameterValueFromUI(kParamTom2, v);
+                const double gain = std::max(GainFromV(v), kMinGain);
+                gKit.SetGainTag("tom02_close", (float)gain);
+                if (auto* ui = cc->GetUI())
+                    if (auto* t = ui->GetControlWithTag(kCtrlTagTom2ValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gain)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
+                });
+
+            pTom3Slider->SetActionFunction([=](IControl* cc) {
+                const double v = cc->GetValue();
+                GetParam(kParamTom3)->SetNormalized(v);
+                SendParameterValueFromUI(kParamTom3, v);
+                const double gain = std::max(GainFromV(v), kMinGain);
+                gKit.SetGainTag("tom03_close", (float)gain);
+                if (auto* ui = cc->GetUI())
+                    if (auto* t = ui->GetControlWithTag(kCtrlTagTom3ValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gain)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
+                });
+
+            // CYMBALS: параметр + тэг "crash"
+            pCymSlider->SetActionFunction([=](IControl* cc) {
+                const double v = cc->GetValue();
+                GetParam(kParamCymbals)->SetNormalized(v);
+                SendParameterValueFromUI(kParamCymbals, v);
+                const double gain = std::max(GainFromV(v), kMinGain);
+                gKit.SetGainTag("crash", (float)gain);
+                if (auto* ui = cc->GetUI())
+                    if (auto* t = ui->GetControlWithTag(kCtrlTagCymbalsValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gain)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
+                });
+
+            // ROOMS: параметр + два тэга
+            pRoomsSlider->SetActionFunction([=](IControl* cc) {
+                const double v = cc->GetValue();
+                GetParam(kParamRooms)->SetNormalized(v);
+                SendParameterValueFromUI(kParamRooms, v);
+                const double gain = std::max(GainFromV(v), kMinGain);
+                gKit.SetGainTag("snare_room", (float)gain);
+                gKit.SetGainTag("tom_room", (float)gain);
+                gKit.SetGainTag("kick_room", (float)gain);
+                gKit.SetGainTag("racktom1_room", (float)gain);
+                gKit.SetGainTag("racktom2_room", (float)gain);
+                gKit.SetGainTag("crashL_room", (float)gain);
+                gKit.SetGainTag("crashR_room", (float)gain);
+                if (auto* ui = cc->GetUI())
+                    if (auto* t = ui->GetControlWithTag(kCtrlTagRoomsValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gain)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
+                });
+
+            // MASTER: только глобальный параметр/текст (масштабирует выход в DSP)
+            pMasterSlider->SetActionFunction([=](IControl* cc)
+                {
+                    const double v = cc->GetValue();
+                    GetParam(kParamMaster)->SetNormalized(v);
+                    SendParameterValueFromUI(kParamMaster, v);
+                    const double g = std::max(GainFromV(v), kMinGain);
+                    if (auto* ui = cc->GetUI())
+                        if (auto* t = ui->GetControlWithTag(kCtrlTagMasterValueText)) {
+                            WDL_String s; FormatDBString(s, 20.0 * std::log10(g));
+                            t->As<IEditableTextControl>()->SetStr(s.Get());
+                            t->SetDirty(false);
+                        }
+                });
+
+            // --- ТЕКСТЫ ---
+            auto TextActionCommon = [&](IControl* tCtrl, int sliderTag, int paramIdx, const char* tag)
+                {
+                    std::string str = tCtrl->As<IEditableTextControl>()->GetStr();
+                    for (char& ch : str) if (ch == ',') ch = '.';
+                    while (!str.empty() && (std::isalpha((unsigned char)str.back()) || std::isspace((unsigned char)str.back())))
+                        str.pop_back();
+
+                    const double kMaxDB_loc = 20.0 * std::log10(1.5);
+                    const double kMinDB_loc = 20.0 * std::log10(1e-6);
+
+                    double dB = 0.0;
+                    {
+                        std::string lower = str;
+                        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                        if (lower == "-inf" || lower == "inf" || lower == "-infinity" || lower == "infinity")
+                            dB = kMinDB_loc;
+                        else {
+                            char* endp = nullptr;
+                            dB = std::strtod(str.c_str(), &endp);
+                            if (!endp) dB = 0.0;
+                            dB = std::clamp(dB, kMinDB_loc, kMaxDB_loc);
+                        }
+                    }
+
+                    const double gain = std::pow(10.0, dB / 20.0);
+                    double v = std::clamp(VFromGain(gain), 0.0, 1.0);
+
+                    if (auto* ui = tCtrl->GetUI())
+                    {
+                        if (auto* sld = ui->GetControlWithTag(sliderTag))
+                        {
+                            sld->SetValue(v);
+                            if (paramIdx >= 0)
+                            {
+                                GetParam(paramIdx)->SetNormalized(v);
+                                SendParameterValueFromUI(paramIdx, v);
+                            }
+                            gKit.SetGainTag(tag, (float)gain);
+
+                            WDL_String s; FormatDBString(s, 20.0 * std::log10(std::max(GainFromV(v), kMinGain)));
+                            tCtrl->As<IEditableTextControl>()->SetStr(s.Get());
+
+                            sld->SetDirty(false);
+                            tCtrl->SetDirty(false);
+                        }
+
+                        tCtrl->Hide(true);
+                        tCtrl->SetDirty(false);
+                        if (auto* catcher = ui->GetControlWithTag(kCtrlTagClickCatcher))
+                        {
+                            catcher->Hide(true); catcher->SetDirty(false);
+                        }
+                    }
+                };
+
+            // Action: KICK text
+            pKickText->SetActionFunction([=](IControl* tCtrl)
+                {
+                    std::string str = tCtrl->As<IEditableTextControl>()->GetStr();
+                    for (char& ch : str) if (ch == ',') ch = '.';
+                    while (!str.empty() && (std::isalpha((unsigned char)str.back()) || std::isspace((unsigned char)str.back())))
+                        str.pop_back();
+
+                    const double kMaxDB_loc = 20.0 * std::log10(1.5);
+                    const double kMinDB_loc = 20.0 * std::log10(1e-6);
+
+                    double dB = 0.0;
+                    {
+                        std::string lower = str;
+                        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                        if (lower == "-inf" || lower == "inf" || lower == "-infinity" || lower == "infinity")
+                            dB = kMinDB_loc;
+                        else {
+                            char* endp = nullptr;
+                            dB = std::strtod(str.c_str(), &endp);
+                            if (!endp) dB = 0.0;
+                            dB = std::clamp(dB, kMinDB_loc, kMaxDB_loc);
+                        }
+                    }
+
+                    const double gain = std::pow(10.0, dB / 20.0);
+                    double v = std::clamp(VFromGain(gain), 0.0, 1.0);
+
+                    if (auto* ui = tCtrl->GetUI())
+                    {
+                        if (auto* sld = ui->GetControlWithTag(kCtrlTagMixerSlider))
+                        {
+                            sld->SetValue(v);
+                            GetParam(kParamKick)->SetNormalized(v);
+                            SendParameterValueFromUI(kParamKick, v);
+                            gKit.SetGainTag("kick", (float)gain);
+
+                            WDL_String s; FormatDBString(s, 20.0 * std::log10(std::max(GainFromV(v), kMinGain)));
+                            tCtrl->As<IEditableTextControl>()->SetStr(s.Get());
+
+                            sld->SetDirty(false);
+                            tCtrl->SetDirty(false);
+                        }
+
+                        tCtrl->Hide(true);
+                        tCtrl->SetDirty(false);
+                        if (auto* catcher = ui->GetControlWithTag(kCtrlTagClickCatcher))
+                        {
+                            catcher->Hide(true); catcher->SetDirty(false);
+                        }
+                    }
+                });
+
+            // Action: SNARE text
+            pSnareText->SetActionFunction([=](IControl* tCtrl)
+                {
+                    TextActionCommon(tCtrl, kCtrlTagSnareSlider, kParamSnare, "snare_close");
+                });
+
+            // TOM texts
+            pTom1Text->SetActionFunction([=](IControl* tCtrl) { TextActionCommon(tCtrl, kCtrlTagTom1Slider, kParamTom1, "tom01_close"); });
+            pTom2Text->SetActionFunction([=](IControl* tCtrl) { TextActionCommon(tCtrl, kCtrlTagTom2Slider, kParamTom2, "tom02_close"); });
+            pTom3Text->SetActionFunction([=](IControl* tCtrl) { TextActionCommon(tCtrl, kCtrlTagTom3Slider, kParamTom3, "tom03_close"); });
+
+            // CYMBALS text (параметр + тэг)
+            pCymText->SetActionFunction([=](IControl* tCtrl) {
+                std::string str = tCtrl->As<IEditableTextControl>()->GetStr();
+                for (auto& ch : str) if (ch == ',') ch = '.';
+                while (!str.empty() && (std::isalpha((unsigned char)str.back()) || std::isspace((unsigned char)str.back()))) str.pop_back();
+                const double kMaxDB_loc = 20.0 * std::log10(1.5);
+                const double kMinDB_loc = 20.0 * std::log10(1e-6);
+                double dB = 0.0;
+                {
+                    std::string lower = str; std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                    if (lower == "-inf" || lower == "inf" || lower == "-infinity" || lower == "infinity") dB = kMinDB_loc;
+                    else { char* endp = nullptr; dB = std::strtod(str.c_str(), &endp); if (!endp) dB = 0.0; dB = std::clamp(dB, kMinDB_loc, kMaxDB_loc); }
+                }
+                const double gain = std::pow(10.0, dB / 20.0);
+                double v = std::clamp(VFromGain(gain), 0.0, 1.0);
+
+                if (auto* ui = tCtrl->GetUI())
+                {
+                    if (auto* sld = ui->GetControlWithTag(kCtrlTagCymbalsSlider))
+                    {
+                        sld->SetValue(v);
+                        GetParam(kParamCymbals)->SetNormalized(v);
+                        SendParameterValueFromUI(kParamCymbals, v);
+                        gKit.SetGainTag("crash", (float)gain);
+
+                        WDL_String s; FormatDBString(s, 20.0 * std::log10(std::max(GainFromV(v), kMinGain)));
+                        tCtrl->As<IEditableTextControl>()->SetStr(s.Get());
+
+                        sld->SetDirty(false); tCtrl->SetDirty(false);
+                    }
+                    tCtrl->Hide(true); tCtrl->SetDirty(false);
+                    if (auto* catcher = ui->GetControlWithTag(kCtrlTagClickCatcher)) { catcher->Hide(true); catcher->SetDirty(false); }
+                }
+                });
+
+            // ROOMS text (параметр + два room-тэга)
+            pRoomsText->SetActionFunction([=](IControl* tCtrl) {
+                std::string str = tCtrl->As<IEditableTextControl>()->GetStr();
+                for (auto& ch : str) if (ch == ',') ch = '.';
+                while (!str.empty() && (std::isalpha((unsigned char)str.back()) || std::isspace((unsigned char)str.back()))) str.pop_back();
+                const double kMaxDB_loc = 20.0 * std::log10(1.5);
+                const double kMinDB_loc = 20.0 * std::log10(1e-6);
+                double dB = 0.0;
+                {
+                    std::string lower = str; std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                    if (lower == "-inf" || lower == "inf" || lower == "-infinity" || lower == "infinity") dB = kMinDB_loc;
+                    else { char* endp = nullptr; dB = std::strtod(str.c_str(), &endp); if (!endp) dB = 0.0; dB = std::clamp(dB, kMinDB_loc, kMaxDB_loc); }
+                }
+                const double gain = std::pow(10.0, dB / 20.0);
+                double v = std::clamp(VFromGain(gain), 0.0, 1.0);
+
+                if (auto* ui = tCtrl->GetUI())
+                {
+                    if (auto* sld = ui->GetControlWithTag(kCtrlTagRoomsSlider))
+                    {
+                        sld->SetValue(v);
+                        GetParam(kParamRooms)->SetNormalized(v);
+                        SendParameterValueFromUI(kParamRooms, v);
+                        gKit.SetGainTag("snare_room", (float)gain);
+                        gKit.SetGainTag("tom_room", (float)gain);
+                        gKit.SetGainTag("kick_room", (float)gain);
+                        gKit.SetGainTag("racktom1_room", (float)gain);
+                        gKit.SetGainTag("racktom2_room", (float)gain);
+                        gKit.SetGainTag("crashL_room", (float)gain);
+                        gKit.SetGainTag("crashR_room", (float)gain);
+
+                        WDL_String s; FormatDBString(s, 20.0 * std::log10(std::max(GainFromV(v), kMinGain)));
+                        tCtrl->As<IEditableTextControl>()->SetStr(s.Get());
+
+                        sld->SetDirty(false); tCtrl->SetDirty(false);
+                    }
+                    tCtrl->Hide(true); tCtrl->SetDirty(false);
+                    if (auto* catcher = ui->GetControlWithTag(kCtrlTagClickCatcher)) { catcher->Hide(true); catcher->SetDirty(false); }
+                }
+                });
+
+            // MASTER text (глобальный параметр)
+            pMasterText->SetActionFunction([=](IControl* tCtrl)
+                {
+                    std::string str = tCtrl->As<IEditableTextControl>()->GetStr();
+                    for (auto& ch : str) if (ch == ',') ch = '.';
+                    while (!str.empty() && (std::isalpha((unsigned char)str.back()) || std::isspace((unsigned char)str.back()))) str.pop_back();
+
+                    const double kMaxDB_loc = 20.0 * std::log10(1.5);
+                    const double kMinDB_loc = 20.0 * std::log10(1e-6);
+                    double dB = 0.0;
+                    {
+                        std::string lower = str; std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                        if (lower == "-inf" || lower == "inf" || lower == "-infinity" || lower == "infinity") dB = kMinDB_loc;
+                        else { char* endp = nullptr; dB = std::strtod(str.c_str(), &endp); if (!endp) dB = 0.0; dB = std::clamp(dB, kMinDB_loc, kMaxDB_loc); }
+                    }
+                    const double gain = std::pow(10.0, dB / 20.0);
+                    double v = std::clamp(VFromGain(gain), 0.0, 1.0);
+
+                    if (auto* ui = tCtrl->GetUI())
+                    {
+                        if (auto* sld = ui->GetControlWithTag(kCtrlTagMasterSlider))
+                        {
+                            sld->SetValue(v);
+                            GetParam(kParamMaster)->SetNormalized(v);
+                            SendParameterValueFromUI(kParamMaster, v);
+
+                            WDL_String s; FormatDBString(s, 20.0 * std::log10(std::max(GainFromV(v), kMinGain)));
+                            tCtrl->As<IEditableTextControl>()->SetStr(s.Get());
+
+                            sld->SetDirty(false); tCtrl->SetDirty(false);
+                        }
+                        tCtrl->Hide(true); tCtrl->SetDirty(false);
+                        if (auto* catcher = ui->GetControlWithTag(kCtrlTagClickCatcher)) { catcher->Hide(true); catcher->SetDirty(false); }
+                    }
+                });
+
+            // --- ВЗАИМОИСКЛЮЧАЮЩИЕ кнопки ---
+            auto exclusiveToggle =
+                [pOverlayL, pOverlayCUnd, pOverlayC, pOverlayR,
+                pMenuBtnL, pMenuBtnC, pMenuBtnR,
+                pMixSlider, pKickMeter, pKickText,
+                pSnareSlider, pSnareMeter, pSnareText,
+                pTom1Slider, pTom1Meter, pTom1Text,
+                pTom2Slider, pTom2Meter, pTom2Text,
+                pTom3Slider, pTom3Meter, pTom3Text,
+                pCymSlider, pCymbalsMeter, pCymText,
+                pRoomsSlider, pRoomsMeter, pRoomsText,
+                pMasterSlider, pMasterMeter, pMasterText,
+                pCymOverlayUnd, pCymOverlayFg,
+                pGraphics]
+                (MappingOverlayControl* showOv, IControl* showBtn)
+            {
+                const bool isShown = (showOv && !showOv->IsHidden());
+
+                auto hideMixer = [&]()
+                    {
+                        if (!pOverlayCUnd->IsHidden()) { pOverlayCUnd->Hide(true); pOverlayCUnd->SetDirty(false); }
+                        if (!pOverlayC->IsHidden()) { pOverlayC->Hide(true);    pOverlayC->SetDirty(false); }
+
+                        if (pMixSlider) { pMixSlider->Hide(true);   pMixSlider->SetDirty(false); }
+                        if (pKickMeter) { pKickMeter->Hide(true);   pKickMeter->SetDirty(false); }
+                        if (pKickText) { pKickText->Hide(true);    pKickText->SetDirty(false); }
+
+                        if (pSnareSlider) { pSnareSlider->Hide(true); pSnareSlider->SetDirty(false); }
+                        if (pSnareMeter) { pSnareMeter->Hide(true);  pSnareMeter->SetDirty(false); }
+                        if (pSnareText) { pSnareText->Hide(true);   pSnareText->SetDirty(false); }
+
+                        if (pTom1Slider) { pTom1Slider->Hide(true);  pTom1Slider->SetDirty(false); }
+                        if (pTom1Meter) { pTom1Meter->Hide(true);   pTom1Meter->SetDirty(false); }
+                        if (pTom1Text) { pTom1Text->Hide(true);    pTom1Text->SetDirty(false); }
+
+                        if (pTom2Slider) { pTom2Slider->Hide(true);  pTom2Slider->SetDirty(false); }
+                        if (pTom2Meter) { pTom2Meter->Hide(true);   pTom2Meter->SetDirty(false); }
+                        if (pTom2Text) { pTom2Text->Hide(true);    pTom2Text->SetDirty(false); }
+
+                        if (pTom3Slider) { pTom3Slider->Hide(true);  pTom3Slider->SetDirty(false); }
+                        if (pTom3Meter) { pTom3Meter->Hide(true);   pTom3Meter->SetDirty(false); }
+                        if (pTom3Text) { pTom3Text->Hide(true);    pTom3Text->SetDirty(false); }
+
+                        if (pCymSlider) { pCymSlider->Hide(true);   pCymSlider->SetDirty(false); }
+                        if (pCymbalsMeter) { pCymbalsMeter->Hide(true); pCymbalsMeter->SetDirty(false); }
+                        if (pCymText) { pCymText->Hide(true);     pCymText->SetDirty(false); }
+
+                        if (pRoomsSlider) { pRoomsSlider->Hide(true); pRoomsSlider->SetDirty(false); }
+                        if (pRoomsMeter) { pRoomsMeter->Hide(true);  pRoomsMeter->SetDirty(false); }
+                        if (pRoomsText) { pRoomsText->Hide(true);   pRoomsText->SetDirty(false); }
+
+                        // NEW — master
+                        if (pMasterSlider) { pMasterSlider->Hide(true); pMasterSlider->SetDirty(false); }
+                        if (pMasterMeter) { pMasterMeter->Hide(true);  pMasterMeter->SetDirty(false); }
+                        if (pMasterText) { pMasterText->Hide(true);   pMasterText->SetDirty(false); }
+
+                        if (pMenuBtnC) { pMenuBtnC->SetValue(0.0); pMenuBtnC->SetDirty(false); }
+
+                        if (pCymOverlayUnd) { pCymOverlayUnd->Hide(true); pCymOverlayUnd->SetDirty(false); }
+                        if (pCymOverlayFg) { pCymOverlayFg->Hide(true);  pCymOverlayFg->SetDirty(false); }
+
+                        if (auto* catcher = pGraphics->GetControlWithTag(kCtrlTagClickCatcher))
+                        {
+                            catcher->Hide(true); catcher->SetDirty(false);
+                        }
+
+                        if (auto* trig = pGraphics->GetControlWithTag(kCtrlTagCymbalsTrigger))
+                        {
+                            // >>> NEW: гарантированно свернуть «cymbals», чтобы при следующем открытии MIXER они были закрыты
+                            trig->As<CymbalSlideTrigger>()->SetOpen(false, /*noAnim*/ true);
+                            trig->Hide(true);
+                            trig->SetDirty(false);
+                        }
+                    };
+
+                auto hideOne = [&](MappingOverlayControl* ov, IControl* btn)
+                    {
+                        if (ov && !ov->IsHidden()) { ov->Hide(true); ov->SetDirty(false); }
+                        if (btn) { btn->SetValue(0.0); btn->SetDirty(false); }
+                        if (ov == pOverlayC) hideMixer();
+                    };
+
+                if (isShown)
+                {
+                    hideOne(showOv, showBtn);
+                }
+                else
+                {
+                    if (showOv != pOverlayL) hideOne(pOverlayL, pMenuBtnL);
+                    if (showOv != pOverlayC) hideOne(pOverlayC, pMenuBtnC);
+                    if (showOv != pOverlayR) hideOne(pOverlayR, pMenuBtnR);
+
+                    if (showOv == pOverlayC)
+                    {
+                        pOverlayCUnd->Hide(false); pOverlayCUnd->SetDirty(false);
+                        pOverlayC->Hide(false);    pOverlayC->SetDirty(false);
+
+                        if (pMixSlider) { pMixSlider->Hide(false);   pMixSlider->SetDirty(false); }
+                        if (pKickMeter) { pKickMeter->Hide(false);   pKickMeter->SetDirty(false); }
+                        if (pKickText) { pKickText->Hide(true);     pKickText->SetDirty(false); }
+
+                        if (pSnareSlider) { pSnareSlider->Hide(false); pSnareSlider->SetDirty(false); }
+                        if (pSnareMeter) { pSnareMeter->Hide(false);  pSnareMeter->SetDirty(false); }
+                        if (pSnareText) { pSnareText->Hide(true);    pSnareText->SetDirty(false); }
+
+                        if (pTom1Slider) { pTom1Slider->Hide(false);  pTom1Slider->SetDirty(false); }
+                        if (pTom1Meter) { pTom1Meter->Hide(false);   pTom1Meter->SetDirty(false); }
+                        if (pTom1Text) { pTom1Text->Hide(true);     pTom1Text->SetDirty(false); }
+
+                        if (pTom2Slider) { pTom2Slider->Hide(false);  pTom2Slider->SetDirty(false); }
+                        if (pTom2Meter) { pTom2Meter->Hide(false);   pTom2Meter->SetDirty(false); }
+                        if (pTom2Text) { pTom2Text->Hide(true);     pTom2Text->SetDirty(false); }
+
+                        if (pTom3Slider) { pTom3Slider->Hide(false);  pTom3Slider->SetDirty(false); }
+                        if (pTom3Meter) { pTom3Meter->Hide(false);   pTom3Meter->SetDirty(false); }
+                        if (pTom3Text) { pTom3Text->Hide(true);     pTom3Text->SetDirty(false); }
+
+                        if (pCymSlider) { pCymSlider->Hide(false);   pCymSlider->SetDirty(false); }
+                        if (pCymbalsMeter) { pCymbalsMeter->Hide(false); pCymbalsMeter->SetDirty(false); }
+                        if (pCymText) { pCymText->Hide(true);      pCymText->SetDirty(false); }
+
+                        if (pRoomsSlider) { pRoomsSlider->Hide(false); pRoomsSlider->SetDirty(false); }
+                        if (pRoomsMeter) { pRoomsMeter->Hide(false);  pRoomsMeter->SetDirty(false); }
+                        if (pRoomsText) { pRoomsText->Hide(true);    pRoomsText->SetDirty(false); }
+
+                        // NEW — master
+                        if (pMasterSlider) { pMasterSlider->Hide(false); pMasterSlider->SetDirty(false); }
+                        if (pMasterMeter) { pMasterMeter->Hide(false);  pMasterMeter->SetDirty(false); }
+                        if (pMasterText) { pMasterText->Hide(true);    pMasterText->SetDirty(false); }
+
+                        if (pCymOverlayUnd) { pCymOverlayUnd->Hide(false); pCymOverlayUnd->SetDirty(false); }
+                        if (pCymOverlayFg) { pCymOverlayFg->Hide(false);  pCymOverlayFg->SetDirty(false); }
+
+                        if (showBtn) { showBtn->SetValue(1.0);  showBtn->SetDirty(false); }
+
+                        // триггер поверх (последним)
+                        if (auto* trig = pGraphics->GetControlWithTag(kCtrlTagCymbalsTrigger))
+                        {
+                            trig->Hide(false);
+                            trig->SetDirty(false);
+                        }
+                    }
+                    else
+                    {
+                        if (showOv) { showOv->Hide(false); showOv->SetDirty(false); }
+                        if (showBtn) { showBtn->SetValue(1.0); showBtn->SetDirty(false); }
+                        hideMixer();
+                    }
+                }
+            };
+
+
+            pMenuBtnL->SetActionFunction([exclusiveToggle, pOverlayL, pMenuBtnL](IControl*) { exclusiveToggle(pOverlayL, pMenuBtnL); });
+            pMenuBtnC->SetActionFunction([exclusiveToggle, pOverlayC, pMenuBtnC](IControl*) { exclusiveToggle(pOverlayC, pMenuBtnC); });
+            pMenuBtnR->SetActionFunction([exclusiveToggle, pOverlayR, pMenuBtnR](IControl*) { exclusiveToggle(pOverlayR, pMenuBtnR); });
+
+        };
+#endif // IPLUG_EDITOR
+
+    // Применяем дефолт параметров к DSP/движку при создании инстанса:
+    OnParamChange(kParamKick);
+    OnParamChange(kParamSnare);
+    OnParamChange(kParamTom1);
+    OnParamChange(kParamTom2);
+    OnParamChange(kParamTom3);
+    OnParamChange(kParamCymbals);
+    OnParamChange(kParamRooms);
+    OnParamChange(kParamMaster); // NEW
+}
+
+#if IPLUG_EDITOR
+void TemplateProject::OnParentWindowResize(int width, int height)
+{
+    if (GetUI())
+        GetUI()->Resize(width, height, 1.f, false);
+}
+#endif
+
+// === ГЛАВНЫЙ ХУК ПАРАМЕТРОВ ===
+void TemplateProject::OnParamChange(int paramIdx)
+{
+    if (paramIdx == kParamMaster)
+    {
+        const double v = GetParam(kParamMaster)->GetNormalized();
+        const double gain = std::max(GainFromV(v), kMinGain);
+        mMasterGain.store((float)gain, std::memory_order_release);
+
+#if IPLUG_EDITOR
+        if (GetUI())
+        {
+            if (auto* s = GetUI()->GetControlWithTag(kCtrlTagMasterSlider))
+                s->SetValue((float)v);
+
+            if (auto* t = GetUI()->GetControlWithTag(kCtrlTagMasterValueText))
+            {
+                const double dB = 20.0 * std::log10(gain);
+                WDL_String str; FormatDBString(str, dB);
+                t->As<IEditableTextControl>()->SetStr(str.Get());
+            }
+
+            GetUI()->SetAllControlsDirty();
+        }
+#endif
+        return;
+    }
+
+    if (paramIdx == kParamKick || paramIdx == kParamSnare ||
+        paramIdx == kParamTom1 || paramIdx == kParamTom2 || paramIdx == kParamTom3 ||
+        paramIdx == kParamCymbals || paramIdx == kParamRooms)
+    {
+        const bool isKick = (paramIdx == kParamKick);
+        const bool isSnare = (paramIdx == kParamSnare);
+        const bool isCym = (paramIdx == kParamCymbals);
+        const bool isRooms = (paramIdx == kParamRooms);
+
+        const double v = GetParam(paramIdx)->GetNormalized();
+        const double gain = std::max(GainFromV(v), kMinGain);
+
+        if (isRooms) {
+            gKit.SetGainTag("snare_room", (float)gain);
+            gKit.SetGainTag("tom_room", (float)gain);
+            gKit.SetGainTag("kick_room", (float)gain);
+            gKit.SetGainTag("racktom1_room", (float)gain);
+            gKit.SetGainTag("racktom2_room", (float)gain);
+            gKit.SetGainTag("crashL_room", (float)gain);
+            gKit.SetGainTag("crashR_room", (float)gain);
+        }
+        else {
+            const char* tag =
+                isKick ? "kick" :
+                isSnare ? "snare_close" :
+                isCym ? "crash" :
+                (paramIdx == kParamTom1) ? "tom01_close" :
+                (paramIdx == kParamTom2) ? "tom02_close" :
+                "tom03_close";
+            gKit.SetGainTag(tag, (float)gain);
+        }
+
+#if IPLUG_EDITOR
+        if (GetUI())
+        {
+            const int sliderTag =
+                isKick ? kCtrlTagMixerSlider :
+                isSnare ? kCtrlTagSnareSlider :
+                isCym ? kCtrlTagCymbalsSlider :
+                isRooms ? kCtrlTagRoomsSlider :
+                (paramIdx == kParamTom1) ? kCtrlTagTom1Slider :
+                (paramIdx == kParamTom2) ? kCtrlTagTom2Slider :
+                kCtrlTagTom3Slider;
+
+            const int textTag =
+                isKick ? kCtrlTagKickValueText :
+                isSnare ? kCtrlTagSnareValueText :
+                isCym ? kCtrlTagCymbalsValueText :
+                isRooms ? kCtrlTagRoomsValueText :
+                (paramIdx == kParamTom1) ? kCtrlTagTom1ValueText :
+                (paramIdx == kParamTom2) ? kCtrlTagTom2ValueText :
+                kCtrlTagTom3ValueText;
+
+            if (auto* s = GetUI()->GetControlWithTag(sliderTag))
+                s->SetValue((float)v);
+
+            if (auto* t = GetUI()->GetControlWithTag(textTag))
+            {
+                const double dB = 20.0 * std::log10(gain);
+                WDL_String str; FormatDBString(str, dB);
+                t->As<IEditableTextControl>()->SetStr(str.Get());
+            }
+
+            GetUI()->SetAllControlsDirty();
+        }
+#endif
+    }
+}
+
+// ----- UI lifecycle -----
+void TemplateProject::OnUIOpen()
+{
+    mUIReady.store(true, std::memory_order_release);
+}
+
+void TemplateProject::OnUIClose()
+{
+    mUIReady.store(false, std::memory_order_release);
+}
+
+// ----- Helpers -----
+bool TemplateProject::IsUIReady() const
+{
+    return mUIReady.load(std::memory_order_acquire);
+}
+
+bool TemplateProject::HasControlSafe(int tag) const
+{
+    if (!IsUIReady()) return false;
+    if (auto* ui = GetUI())
+        return ui->GetControlWithTag(tag) != nullptr;
+    return false;
+}
+
+//======================================================================
+/* 5) DSP-ЧАСТЬ */
+#if IPLUG_DSP
+
+void TemplateProject::OnReset()
+{
+  gKit.Prepare(GetSampleRate());
+
+  // ресеты метеров (как у тебя)
+  mMeterSender.Reset(GetSampleRate());
+  mSnareMeterSender.Reset(GetSampleRate());
+  mTom1MeterSender.Reset(GetSampleRate());
+  mTom2MeterSender.Reset(GetSampleRate());
+  mTom3MeterSender.Reset(GetSampleRate());
+  mCymbalsMeterSender.Reset(GetSampleRate());
+  mRoomsMeterSender.Reset(GetSampleRate());
+  mMasterMeterSender.Reset(GetSampleRate());
+
+  // MIDI очередь — как в старом примере
+  mMidiQueue.Clear();
+  mMidiQueue.Resize(GetBlockSize());
+}
+
+void TemplateProject::ProcessMidiMsg(const iplug::IMidiMsg& msg)
+{
+  // "как в примере": кладём по указателю
+  iplug::IMidiMsg* p = const_cast<iplug::IMidiMsg*>(&msg);
+  mMidiQueue.Add(p);
+}
+
+void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nFrames)
+{
+  const int nOutChans = NOutChansConnected();
+
+#if defined(APP_API)
+  constexpr bool kIsStandalone = true;
+#else
+  constexpr bool kIsStandalone = false;
+#endif
+  const bool haveExtraPairs = (nOutChans > 2);
+  const bool routeMixToMain = kIsStandalone || !haveExtraPairs;
+
+  const float gMaster = mMasterGain.load(std::memory_order_acquire);
+
+  // 0) Обнулить выходы
+  for (int c = 0; c < nOutChans; ++c)
+    if (outputs[c])
+      std::fill(outputs[c], outputs[c] + nFrames, (sample)0);
+
+  // 1) Подготовить taps (ровно как у тебя)
+  auto prepTap = [&](std::vector<sample>& L, std::vector<sample>& R)
+  {
+    if ((int)L.size() < nFrames) L.resize(nFrames);
+    if ((int)R.size() < nFrames) R.resize(nFrames);
+    std::fill(L.begin(), L.begin() + nFrames, (sample)0);
+    std::fill(R.begin(), R.begin() + nFrames, (sample)0);
+  };
+  prepTap(mKickL, mKickR);
+  prepTap(mSnareL, mSnareR);
+  prepTap(mTom1L, mTom1R);
+  prepTap(mTom2L, mTom2R);
+  prepTap(mTom3L, mTom3R);
+  prepTap(mCrashL, mCrashR);
+
+  prepTap(mSnareRoomL, mSnareRoomR);
+  prepTap(mTomRoomL,   mTomRoomR);
+  prepTap(mKickRoomL,  mKickRoomR);
+  prepTap(mRackTom1RoomL, mRackTom1RoomR);
+  prepTap(mRackTom2RoomL, mRackTom2RoomR);
+  prepTap(mCrashRRoomL,   mCrashRRoomR);
+  prepTap(mCrashLRoomL,   mCrashLRoomR);
+
+  // 2) Текущие указатели на taps
+  sample* kickTap[2]     = { mKickL.data(),        mKickR.data()        };
+  sample* snareTap[2]    = { mSnareL.data(),       mSnareR.data()       };
+  sample* tom1Tap[2]     = { mTom1L.data(),        mTom1R.data()        };
+  sample* tom2Tap[2]     = { mTom2L.data(),        mTom2R.data()        };
+  sample* tom3Tap[2]     = { mTom3L.data(),        mTom3R.data()        };
+  sample* crashTap[2]    = { mCrashL.data(),       mCrashR.data()       };
+
+  sample* kickRoomTap[2]   = { mKickRoomL.data(),     mKickRoomR.data()   };
+  sample* snareRoomTap[2]  = { mSnareRoomL.data(),    mSnareRoomR.data()  };
+  sample* rt1RoomTap[2]    = { mRackTom1RoomL.data(), mRackTom1RoomR.data() };
+  sample* rt2RoomTap[2]    = { mRackTom2RoomL.data(), mRackTom2RoomR.data() };
+  sample* floorRoomTap[2]  = { mTomRoomL.data(),      mTomRoomR.data()    };
+  sample* crashLRoomTap[2] = { mCrashLRoomL.data(),   mCrashLRoomR.data() };
+  sample* crashRRoomTap[2] = { mCrashRRoomL.data(),   mCrashRRoomR.data() };
+
+  auto renderChunk = [&](int n)
+  {
+    if (n <= 0) return;
+    gKit.Process(nullptr, 2, n, {
+      // close
+      { kickTap,   "kick"         },
+      { snareTap,  "snare_close"  },
+      { tom1Tap,   "tom01_close"  },
+      { tom2Tap,   "tom02_close"  },
+      { tom3Tap,   "tom03_close"  },
+      { crashTap,  "crash"        },
+      // rooms
+      { kickRoomTap,   "kick_room"     },
+      { snareRoomTap,  "snare_room"    },
+      { rt1RoomTap,    "racktom1_room" },
+      { rt2RoomTap,    "racktom2_room" },
+      { floorRoomTap,  "tom_room"      },
+      { crashLRoomTap, "crashL_room"   },
+      { crashRRoomTap, "crashR_room"   },
+    });
+    auto adv = [&](sample** st){ st[0] += n; st[1] += n; };
+    adv(kickTap); adv(snareTap); adv(tom1Tap); adv(tom2Tap); adv(tom3Tap); adv(crashTap);
+    adv(kickRoomTap); adv(snareRoomTap); adv(rt1RoomTap); adv(rt2RoomTap);
+    adv(floorRoomTap); adv(crashLRoomTap); adv(crashRRoomTap);
+  };
+
+  // 3) Рендер в стиле старого примера: цикл по оффсету, очередь через Peek()/Remove()
+  int offset = 0;
+  while (offset < nFrames)
+  {
+    // обработать все события, пришедшие на этот offset
+    while (!mMidiQueue.Empty())
+    {
+      iplug::IMidiMsg* pMsg = mMidiQueue.Peek();
+      if (!pMsg) break;
+
+      if (pMsg->mOffset > offset) break;
+
+      // Handle MIDI message sample-точно
+      if (pMsg->StatusMsg() == iplug::IMidiMsg::kNoteOn && pMsg->Velocity() > 0)
+      {
+        const float vel01 = pMsg->Velocity() / 127.f;
+        gKit.Trigger(pMsg->NoteNumber(), vel01);
+
+#if IPLUG_EDITOR
+        if (IsUIReady())
+        {
+            auto sendPulse = [&](int tag)
+                {
+                    if (HasControlSafe(tag))
+                        SendControlMsgFromDelegate(tag, kMsgTagNotePulse, 0, nullptr);
+                };
+
+            switch (pMsg->NoteNumber())
+            {
+            case kKickNote:  sendPulse(kCtrlTagKickButton);  break;
+            case kSnareNote: sendPulse(kCtrlTagSnareButton); break;
+            case kCrashLNote:sendPulse(kCtrlTagCrashLButton); break;
+            case kCrashRNote:sendPulse(kCtrlTagCrashRButton); break;
+            case kTom1Note:  sendPulse(kCtrlTagPadRackTom1Button); break;
+            case kTom2Note:  sendPulse(kCtrlTagPadRackTom2Button); break;
+            case kTom3Note:  sendPulse(kCtrlTagTomButton);         break;
+            default: break;
+            }
+        }
+#endif
+
+      }
+      // NoteOff для one-shot можно игнорировать
+
+      mMidiQueue.Remove();
+    }
+
+    // ближайшая позиция следующего события (или конец блока)
+    int nextOffset = nFrames;
+    if (!mMidiQueue.Empty())
+    {
+      if (iplug::IMidiMsg* pNext = mMidiQueue.Peek())
+        nextOffset = std::min(nextOffset, std::max(0, std::min(pNext->mOffset, nFrames)));
+    }
+
+    // дорисовать аудио до nextOffset
+    renderChunk(nextOffset - offset);
+    offset = nextOffset;
+  }
+
+  // обновить оффсеты оставшихся событий
+  mMidiQueue.Flush(nFrames);
+
+  // ----- дальше твоя разводка по шинам и метры (оставляю как у тебя) -----
+
+  // ----- Сумма комнат в mTmpL/R + отправка в ROOMS meter -----
+  auto ensureTmpSize = [&](int N) {
+      if ((int)mTmpL.size() < N) mTmpL.resize(N);
+      if ((int)mTmpR.size() < N) mTmpR.resize(N);
+      };
+  ensureTmpSize(nFrames);
+
+  for (int s = 0; s < nFrames; ++s)
+  {
+      const double l =
+          (double)mKickRoomL[s] + (double)mSnareRoomL[s] +
+          (double)mRackTom1RoomL[s] + (double)mRackTom2RoomL[s] +
+          (double)mTomRoomL[s] + (double)mCrashLRoomL[s] +
+          (double)mCrashRRoomL[s];
+
+      const double r =
+          (double)mKickRoomR[s] + (double)mSnareRoomR[s] +
+          (double)mRackTom1RoomR[s] + (double)mRackTom2RoomR[s] +
+          (double)mTomRoomR[s] + (double)mCrashLRoomR[s] +
+          (double)mCrashRRoomR[s];
+
+      mTmpL[s] = (sample)l;
+      mTmpR[s] = (sample)r;
+  }
+
+  // >>> ВАЖНО: отправляем в метер ПРЯМО СЕЙЧАС, пока mTmpL/R = сумма комнат
+  sample* roomsStereo[2] = { mTmpL.data(), mTmpR.data() };
+  mRoomsMeterSender.ProcessBlock(roomsStereo, nFrames, kCtrlTagRoomsMeter);
+
+#if !defined(APP_API)
+  auto hasPair = [&](int L, int R) -> bool
+  {
+    return (L >= 0 && R >= 0 && R < nOutChans && outputs[L] && outputs[R]);
+  };
+  auto writePair = [&](int L, int R, const sample* srcL, const sample* srcR, float gain = 1.f)
+  {
+    if (!srcL || !srcR || !hasPair(L, R)) return;
+    const double g = (double)gain;
+    for (int s = 0; s < nFrames; ++s)
+    {
+      outputs[L][s] += (sample)((double)srcL[s] * g);
+      outputs[R][s] += (sample)((double)srcR[s] * g);
+    }
+  };
+
+  writePair(0, 1,  mKickL.data(),  mKickR.data(),  gMaster);
+  writePair(2, 3,  mSnareL.data(), mSnareR.data(), gMaster);
+  writePair(4, 5,  mTom1L.data(),  mTom1R.data(),  gMaster);
+  writePair(6, 7,  mTom2L.data(),  mTom2R.data(),  gMaster);
+  writePair(8, 9,  mTom3L.data(),  mTom3R.data(),  gMaster);
+  writePair(10, 11,mCrashL.data(), mCrashR.data(), gMaster);
+  writePair(12, 13,mTmpL.data(),   mTmpR.data(),   gMaster);
+#endif
+
+  if (routeMixToMain && nOutChans > 0 && outputs[0])
+  {
+    const int Lm = 0, Rm = (nOutChans > 1 && outputs[1]) ? 1 : 0;
+    for (int s = 0; s < nFrames; ++s)
+    {
+      const double l =
+        (double)mKickL[s] + (double)mSnareL[s] +
+        (double)mTom1L[s] + (double)mTom2L[s] + (double)mTom3L[s] +
+        (double)mCrashL[s] + (double)mTmpL[s];
+
+      const double r =
+        (double)mKickR[s] + (double)mSnareR[s] +
+        (double)mTom1R[s] + (double)mTom2R[s] + (double)mTom3R[s] +
+        (double)mCrashR[s] + (double)mTmpR[s];
+
+      outputs[Lm][s] += (sample)(l * (double)gMaster);
+      outputs[Rm][s] += (sample)(r * (double)gMaster);
+    }
+  }
+
+
+
+  // Метры (как у тебя)
+  sample* kickStereo[2]  = { mKickL.data(),  mKickR.data() };
+  sample* snareStereo[2] = { mSnareL.data(), mSnareR.data() };
+  sample* tom1Stereo[2]  = { mTom1L.data(),  mTom1R.data() };
+  sample* tom2Stereo[2]  = { mTom2L.data(),  mTom2R.data() };
+  sample* tom3Stereo[2]  = { mTom3L.data(),  mTom3R.data() };
+  sample* crashStereo[2] = { mCrashL.data(), mCrashR.data() };
+
+  mMeterSender.ProcessBlock(kickStereo,  nFrames, kCtrlTagMeter);
+  mSnareMeterSender.ProcessBlock(snareStereo, nFrames, kCtrlTagSnareMeter);
+  mTom1MeterSender.ProcessBlock(tom1Stereo,   nFrames, kCtrlTagTom1Meter);
+  mTom2MeterSender.ProcessBlock(tom2Stereo,   nFrames, kCtrlTagTom2Meter);
+  mTom3MeterSender.ProcessBlock(tom3Stereo,   nFrames, kCtrlTagTom3Meter);
+  mCymbalsMeterSender.ProcessBlock(crashStereo, nFrames, kCtrlTagCymbalsMeter);
+
+  auto ensureTmp2 = [&](int N) { if ((int)mTmpL.size() < N) mTmpL.resize(N); if ((int)mTmpR.size() < N) mTmpR.resize(N); };
+  ensureTmp2(nFrames);
+  for (int s = 0; s < nFrames; ++s)
+  {
+    const double l =
+      (double)mKickL[s] + (double)mSnareL[s] +
+      (double)mTom1L[s] + (double)mTom2L[s] + (double)mTom3L[s] +
+      (double)mCrashL[s] + (double)mTmpL[s];
+    const double r =
+      (double)mKickR[s] + (double)mSnareR[s] +
+      (double)mTom1R[s] + (double)mTom2R[s] + (double)mTom3R[s] +
+      (double)mCrashR[s] + (double)mTmpR[s];
+    mTmpL[s] = (sample)(l * (double)gMaster);
+    mTmpR[s] = (sample)(r * (double)gMaster);
+  }
+  sample* masterStereo[2] = { mTmpL.data(), mTmpR.data() };
+  mMasterMeterSender.ProcessBlock(masterStereo, nFrames, kCtrlTagMasterMeter);
+}
+
+void TemplateProject::GetBusName(iplug::ERoute direction, int busIdx, int nBuses, WDL_String& name) const
+{
+    if (direction == iplug::ERoute::kOutput)
+    {
+        static const char* kOutBusNames[] = {
+          "Kick",     // 0/1
+          "Snare",    // 2/3
+          "Tom 1",    // 4/5
+          "Tom 2",    // 6/7
+          "Tom 3",    // 8/9
+          "Cymbals",  // 10/11
+          "Rooms"     // 12/13
+        };
+        const int nNamed = (int)(sizeof(kOutBusNames) / sizeof(kOutBusNames[0]));
+        if (busIdx >= 0 && busIdx < nBuses && busIdx < nNamed)
+            name.Set(kOutBusNames[busIdx]);
+        else
+            name.Set("");
+    }
+    else
+    {
+        name.Set("");
+    }
+}
+
+
+void TemplateProject::OnIdle()
+{
+    auto sendPulse = [&](int tag)
+        {
+            if (HasControlSafe(tag))
+                SendControlMsgFromDelegate(tag, kMsgTagNotePulse, 0, nullptr);
+        };
+
+    auto has = [this](int tag) -> bool { return HasControlSafe(tag); };
+
+    if (has(kCtrlTagMeter))        mMeterSender.TransmitData(*this);
+    if (has(kCtrlTagSnareMeter))   mSnareMeterSender.TransmitData(*this);
+
+    if (has(kCtrlTagTom1Meter)) mTom1MeterSender.TransmitData(*this);
+    if (has(kCtrlTagTom2Meter)) mTom2MeterSender.TransmitData(*this);
+    if (has(kCtrlTagTom3Meter)) mTom3MeterSender.TransmitData(*this);
+
+    if (has(kCtrlTagCymbalsMeter)) mCymbalsMeterSender.TransmitData(*this);
+    if (has(kCtrlTagRoomsMeter))   mRoomsMeterSender.TransmitData(*this);
+
+    if (has(kCtrlTagMasterMeter))  mMasterMeterSender.TransmitData(*this);
+}
+
+#endif // IPLUG_DSP

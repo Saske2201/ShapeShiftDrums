@@ -1,0 +1,725 @@
+// ==========================
+// ВКЛЮЧЕНИЯ ЗАГОЛОВОЧНЫХ ФАЙЛОВ
+// ==========================
+
+// Основные заголовки iPlug2
+#include "TemplateProject.h"
+#include "IPlug_include_in_plug_src.h"
+
+// Внешние библиотеки
+#include "AudioFile.h"
+
+// Стандартная библиотека C++
+#include <atomic>
+#include <vector>
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <array>
+#include <cmath>
+#include <cstdlib>
+
+// Заголовки для редактора (только при компиляции UI)
+#if IPLUG_EDITOR
+#include "IControls.h"
+#endif
+
+// ==========================
+// КОНСТАНТЫ И НАСТРОЙКИ
+// ==========================
+
+// MIDI-ноты для барабанных пэдов (GM стандарт)
+static constexpr int kKickNote = 36; // C2 - Kick Drum
+static constexpr int kSnareNote = 38; // D2 - Snare Drum
+static constexpr int kTomNote = 41; // F2 - Low Floor Tom
+static constexpr int kCrashNote = 49; // C#3 - Crash Cymbal
+
+// Пути к аудиофайлам семплов
+#if defined(OS_WIN)
+static const char* kKickPath = "e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/Kick_Close.wav";
+static const char* kSnarePath = "e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/Snare_Close.wav";
+static const char* kSnareRoomPath = "e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/Snare_Room.wav";
+static const char* kCrashPath = "e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/CrashL_Close.wav";
+static const char* kTomPath = "e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/FloorTom_Close.wav";
+static const char* kTomRoomPath = "e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/resources/samples/FloorTom_Room.wav";
+#else
+static const char* kKickPath = "";
+static const char* kSnarePath = "";
+static const char* kSnareRoomPath = "";
+static const char* kCrashPath = "";
+static const char* kTomPath = "";
+static const char* kTomRoomPath = "";
+#endif
+
+// ==========================
+// ВСПОМОГАТЕЛЬНЫЕ ТИПЫ И КЛАССЫ
+// ==========================
+namespace
+{
+    // Типы данных для аудиообработки
+    using SampleT = float;  // тип для хранения семплов в буфере
+    using HostSample = sample; // тип iPlug2 в ProcessBlock (float/double)
+
+    /**
+     * @brief Простой one-shot плеер для воспроизведения аудиосемплов
+     *
+     * Поддерживает:
+     * - Линейную интерполяцию для плавного воспроизведения
+     * - Автоматическое изменение частоты дискретизации
+     * - Потокобезопасное управление состоянием
+     * - Многоканальное воспроизведение
+     */
+    struct OneShotPlayer
+    {
+        /** Загружает аудиосемпл из AudioFile */
+        void SetSample(const AudioFile<SampleT>& af)
+        {
+            mSrcSR = af.getSampleRate();
+            mNumCh = af.getNumChannels();
+            const int N = af.getNumSamplesPerChannel();
+
+            // Копируем данные в многоканальный буфер
+            mBuf.assign(mNumCh, {});
+            for (int ch = 0; ch < mNumCh; ++ch)
+            {
+                mBuf[ch].resize(N);
+                std::copy(af.samples[ch].begin(), af.samples[ch].end(), mBuf[ch].begin());
+            }
+            mLen = N;
+        }
+
+        /** Подготавливает плеер для работы с заданной частотой дискретизации */
+        void Prepare(double hostSR)
+        {
+            mHostSR = hostSR;
+            mStep = (mSrcSR > 0 ? static_cast<double>(mSrcSR) / mHostSR : 1.0);
+        }
+
+        /** Запускает воспроизведение семпла с начала */
+        void Trigger()
+        {
+            mPos.store(0.0, std::memory_order_release);
+            mPlaying.store(true, std::memory_order_release);
+        }
+
+        /** Останавливает воспроизведение */
+        void Stop()
+        {
+            mPlaying.store(false, std::memory_order_release);
+        }
+
+        /**
+         * @brief Обрабатывает аудиоблок
+         * @param outputs Массив выходных каналов
+         * @param nOutChans Количество выходных каналов
+         * @param nFrames Количество семплов для обработки
+         * @param gain Коэффициент громкости (по умолчанию 1.0)
+         */
+        void Process(HostSample** outputs, int nOutChans, int nFrames, float gain = 1.0f)
+        {
+            if (!mPlaying.load(std::memory_order_acquire) || mBuf.empty())
+                return;
+
+            for (int i = 0; i < nFrames; ++i)
+            {
+                double pos = mPos.load(std::memory_order_relaxed);
+                if (pos >= static_cast<double>(mLen - 1))
+                {
+                    mPlaying.store(false, std::memory_order_release);
+                    break;
+                }
+
+                // Линейная интерполяция
+                const size_t i0 = static_cast<size_t>(pos);
+                const double frac = pos - static_cast<double>(i0);
+
+                for (int outCh = 0; outCh < nOutChans; ++outCh)
+                {
+                    const int srcCh = (mNumCh == 1 ? 0 : (outCh < mNumCh ? outCh : 0));
+                    const SampleT s0 = mBuf[srcCh][i0];
+                    const SampleT s1 = mBuf[srcCh][i0 + 1];
+                    const float s = static_cast<float>((1.0 - frac) * s0 + frac * s1) * gain;
+                    outputs[outCh][i] += static_cast<HostSample>(s);
+                }
+
+                pos += mStep;
+                mPos.store(pos, std::memory_order_relaxed);
+            }
+        }
+
+    private:
+        std::vector<std::vector<SampleT>> mBuf; // Буфер семплов [канал][индекс]
+        std::atomic<bool>   mPlaying{ false };    // Флаг воспроизведения
+        std::atomic<double> mPos{ 0.0 };          // Текущая позиция в семпле
+        int    mNumCh = 0;                     // Количество каналов
+        int    mLen = 0;                     // Длина семпла в семплах
+        int    mSrcSR = 0;                     // Частота дискретизации семпла
+        double mHostSR = 0.0;                   // Частота дискретизации хоста
+        double mStep = 1.0;                   // Шаг воспроизведения
+    };
+
+    /**
+     * @brief Набор барабанных семплов с управлением громкостью
+     *
+     * Поддерживает:
+     * - Загрузку множественных семплов на одну MIDI-ноту
+     * - Индивидуальную настройку громкости по тегам
+     * - Потокобезопасное управление громкостью
+     * - Автоматическую подготовку всех плееров
+     */
+    struct DrumKit
+    {
+        /** Запись о загруженном семпле */
+        struct Entry
+        {
+            int note = 0;                // MIDI-нота для триггера
+            std::string path;            // Путь к файлу
+            std::string tag;             // Текстовый тег для идентификации
+            std::unique_ptr<AudioFile<SampleT>>  file;   // Загруженный аудиофайл
+            std::unique_ptr<OneShotPlayer>       player; // Плеер для воспроизведения
+            std::atomic<float> gain{ 1.0f };               // Громкость (0.0 - 1.0)
+        };
+
+        /** Добавляет новый семпл в набор */
+        void Add(int note, const char* path, const char* tag)
+        {
+            auto e = std::make_unique<Entry>();
+            e->note = note;
+            e->path = path ? path : "";
+            e->tag = tag ? tag : "";
+            e->file = std::make_unique<AudioFile<SampleT>>();
+            e->player = std::make_unique<OneShotPlayer>();
+
+            // Загружаем и проверяем валидность файла
+            if (path && *path && e->file->load(path) &&
+                e->file->getNumChannels() > 0 && e->file->getNumSamplesPerChannel() > 1)
+            {
+                e->player->SetSample(*e->file);
+                mEntries.push_back(std::move(e));
+            }
+            else
+            {
+                DBGMSG("Failed to load sample: %s\n", path ? path : "(null)");
+            }
+        }
+
+        /** Подготавливает все плееры для работы */
+        void Prepare(double hostSR)
+        {
+            for (auto& e : mEntries)
+                e->player->Prepare(hostSR);
+        }
+
+        /** Запускает воспроизведение всех семплов с заданной нотой */
+        void Trigger(int note)
+        {
+            for (auto& e : mEntries)
+                if (e->note == note)
+                    e->player->Trigger();
+        }
+
+        /** Устанавливает громкость по MIDI-ноте */
+        void SetGain(int note, float g)
+        {
+            const float gg = std::clamp(g, 0.0f, 1.0f);
+            for (auto& e : mEntries)
+                if (e->note == note)
+                    e->gain.store(gg, std::memory_order_release);
+        }
+
+        /** Устанавливает громкость по текстовому тегу */
+        void SetGainTag(const char* tag, float g)
+        {
+            const float gg = std::clamp(g, 0.0f, 1.0f);
+            for (auto& e : mEntries)
+                if (e->tag == (tag ? tag : ""))
+                    e->gain.store(gg, std::memory_order_release);
+        }
+
+        /** Обрабатывает аудиоблок для всех активных плееров */
+        void Process(HostSample** outputs, int nOutChans, int nFrames)
+        {
+            for (auto& e : mEntries)
+                e->player->Process(outputs, nOutChans, nFrames, e->gain.load(std::memory_order_acquire));
+        }
+
+        /** Возвращает список всех зарегистрированных MIDI-нот (с возможными дубликатами) */
+        std::vector<int> Notes() const
+        {
+            std::vector<int> out;
+            out.reserve(mEntries.size());
+            for (auto& e : mEntries) out.push_back(e->note);
+            return out;
+        }
+
+    private:
+        std::vector<std::unique_ptr<Entry>> mEntries; // Список загруженных семплов
+    };
+
+    // Глобальный набор барабанных семплов
+    static DrumKit gKit;
+} // namespace
+
+// ==========================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ UI
+// ==========================
+#if IPLUG_EDITOR
+
+/** Создает стиль для пэд-слайдеров */
+static IVStyle CreatePadStyle()
+{
+    return IVStyle{
+      true, true,
+      { COLOR_TRANSPARENT, COLOR_MID_GRAY, COLOR_LIGHT_GRAY, COLOR_DARK_GRAY, COLOR_TRANSLUCENT,
+        IColor(60, 0, 0, 0), COLOR_BLACK, COLOR_GREEN, COLOR_BLUE },
+      IText(19.0, COLOR_BLACK, "Roboto-Regular", EAlign::Center, EVAlign::Top, 0.0),
+      IText(14.0, COLOR_BLACK, "Roboto-Regular", EAlign::Center, EVAlign::Bottom, 0.0),
+      true, true, true, false,
+      0.0, 1.0, 3.0, 1.0, 0.0
+    };
+}
+
+/** Создает барабанные пэд-слайдеры */
+static void CreateDrumPads(IGraphics* pGraphics, const IVStyle& padStyle)
+{
+    // Kick пэд
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(80.0, 90.0, 130.0, 230.0), kNoParameter, "Kick", padStyle,
+            false, EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        gKit.SetGainTag("kick", 1.0f);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("kick", (float)cc->GetValue()); });
+    }
+
+    // Snare пэд
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(130.0, 90.0, 180.0, 230.0), kNoParameter, "Snare", padStyle,
+            false, EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        gKit.SetGainTag("snare_close", 1.0f);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("snare_close", (float)cc->GetValue()); });
+    }
+
+    // Crash пэд
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(180.0, 90.0, 230.0, 230.0), kNoParameter, "Crash", padStyle,
+            false, EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        gKit.SetGainTag("crash", 1.0f);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("crash", (float)cc->GetValue()); });
+    }
+
+    // Snare Room пэд
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(230.0, 90.0, 280.0, 230.0), kNoParameter, "Snare Room", padStyle,
+            false, EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        gKit.SetGainTag("snare_room", 1.0f);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("snare_room", (float)cc->GetValue()); });
+    }
+
+    // Tom пэд
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(280.0, 90.0, 330.0, 230.0), kNoParameter, "Tom", padStyle,
+            false, EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        gKit.SetGainTag("tom_close", 1.0f);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("tom_close", (float)cc->GetValue()); });
+    }
+
+    // Tom Room пэд
+    {
+        auto* c = pGraphics->AttachControl(new IVSliderControl(
+            IRECT(330.0, 90.0, 380.0, 230.0), kNoParameter, "Tom Room", padStyle,
+            false, EDirection::Vertical, DEFAULT_GEARING, 8.0, 2.0, false));
+        c->SetValue(1.0);
+        gKit.SetGainTag("tom_room", 1.0f);
+        c->SetActionFunction([](IControl* cc) { gKit.SetGainTag("tom_room", (float)cc->GetValue()); });
+    }
+}
+
+/** Создает оверлей для клавиатуры с заливкой назначенных клавиш */
+static void CreateKeyboardOverlay(IGraphics* pGraphics, const IRECT& keyboardBounds, int kMinNote, int kMaxNote)
+{
+    // Собираем ноты с семплами и убираем дубликаты
+    auto sampleNotes = gKit.Notes();
+    std::sort(sampleNotes.begin(), sampleNotes.end());
+    sampleNotes.erase(std::unique(sampleNotes.begin(), sampleNotes.end()), sampleNotes.end());
+
+    // Оверлей поверх клавиатуры: закрашиваем назначенные клавиши
+    pGraphics->AttachControl(new ILambdaControl(
+        keyboardBounds,
+        [sampleNotes, kMinNote, kMaxNote](ILambdaControl*, IGraphics& g, IRECT& r)
+        {
+            auto isBlack = [](int n)->bool {
+        switch (n % 12) { case 1: case 3: case 6: case 8: case 10: return true; default: return false; }
+                };
+            auto whiteIndex = [=](int note)->int { int idx = 0; for (int n = kMinNote; n < note; ++n) if (!isBlack(n)) ++idx; return idx; };
+            auto countWhites = [=]()->int { int cnt = 0; for (int n = kMinNote; n <= kMaxNote; ++n) if (!isBlack(n)) ++cnt; return cnt; };
+
+            constexpr float kAlphaWhite = 0.75f;
+            constexpr float kAlphaBlack = 0.75f;
+
+            auto colorWhite = [&](int note)->IColor {
+                const float h = std::fmodf(note * 0.6180339887f, 1.f);
+                return IColor::FromHSLA(h, 0.70f, 0.55f, kAlphaWhite);
+                };
+            auto colorBlack = [&](int note)->IColor {
+                const float h = std::fmodf(note * 0.6180339887f, 1.f);
+                return IColor::FromHSLA(h, 0.70f, 0.55f, kAlphaBlack);
+                };
+
+            const int nWhites = countWhites();
+            if (nWhites <= 1) return;
+
+            const float Lf = std::roundf(r.L);
+            const float Rf = std::roundf(r.R);
+            const int   W = static_cast<int>(std::roundf(Rf - Lf));
+            const int baseW = W / nWhites;
+            const int extra = W - baseW * nWhites;
+
+            std::vector<int> edge(nWhites + 1);
+            edge[0] = static_cast<int>(Lf);
+            for (int i = 0; i < nWhites; ++i)
+            {
+                const int w = baseW + (i < extra ? 1 : 0);
+                edge[i + 1] = edge[i] + w;
+            }
+
+            const float whiteWf = (Rf - Lf) / static_cast<float>(nWhites);
+            std::vector<float> drift(nWhites + 1);
+            for (int i = 0; i <= nWhites; ++i)
+                drift[i] = static_cast<float>(edge[i]) - (Lf + i * whiteWf);
+
+            auto whiteLeft = [&](int i) { return static_cast<float>(edge[i]) - drift[i]; };
+            auto whiteRight = [&](int i) { return static_cast<float>(edge[i + 1]) - drift[i + 1]; };
+            auto whiteW = [&](int /*i*/) { return whiteWf; };
+
+            static float kWhiteOffsetByPC[12] = { -0.01f,0.0f,+0.01f,0.0f, -0.005f,-0.01f,0.0f,+0.01f, 0.0f,-0.005f,0.0f,0.0f };
+            static float kWhiteScaleByPC[12] = { 1,1,1,1,1,1,1,1,1,1,1,1 };
+            static float kBlackOffsetByPC[12] = { 0.0f,-0.05f,0.0f,+0.05f, 0.0f,0.0f,-0.09f,0.0f, 0.0f,0.0f,+0.05f,0.0f };
+
+            const float whiteH = r.H();
+            const float bh = 0.60f * whiteH;
+            const float wAvg = whiteWf;
+
+            auto isAssigned = [&](int note)->bool {
+                return std::find(sampleNotes.begin(), sampleNotes.end(), note) != sampleNotes.end();
+                };
+
+            struct KeyRect { float L, R, T, B; int note; bool paint; };
+            std::vector<KeyRect> blackRectsAll;
+            blackRectsAll.reserve(64);
+
+            // Черные клавиши (сначала собираем их прямоугольники)
+            for (int note = kMinNote; note <= kMaxNote; ++note)
+            {
+                if (!isBlack(note)) continue;
+                const int prevWhiteIdx = whiteIndex(note);
+                if (prevWhiteIdx <= 0 || prevWhiteIdx >= nWhites) continue;
+
+                const float boundaryX = whiteRight(prevWhiteIdx - 1);
+                const int pc = note % 12;
+                const float centerX = boundaryX + kBlackOffsetByPC[pc] * wAvg;
+                const float bw = 0.63f * wAvg;
+
+                IRECT kk(centerX - 0.5f * bw, r.T, centerX + 0.5f * bw, r.T + bh + 1.5f);
+                kk = kk.GetPadded(-1.f).GetPixelAligned();
+                blackRectsAll.push_back({ kk.L, kk.R, kk.T, kk.B, note, isAssigned(note) });
+            }
+
+            // Белые клавиши (закрашиваем, учитывая перекрытие черными)
+            for (int note : sampleNotes)
+            {
+                if (note < kMinNote || note > kMaxNote) continue;
+                if (isBlack(note)) continue;
+
+                const int wIdx = whiteIndex(note);
+                const int pc = note % 12;
+
+                const float L = whiteLeft(wIdx);
+                const float R = whiteRight(wIdx);
+                const float Ww = whiteW(wIdx);
+                const float cx = 0.5f * (L + R) + kWhiteOffsetByPC[pc] * Ww;
+                const float ww = Ww * kWhiteScaleByPC[pc];
+
+                IRECT wrect(cx - 0.5f * ww, r.T, cx + 0.5f * ww, r.B);
+                wrect = wrect.GetPadded(-1.f).GetPixelAligned();
+
+                struct Interval { float a, b; };
+                std::vector<Interval> cover;
+                cover.reserve(3);
+
+                for (const auto& br : blackRectsAll)
+                {
+                    const float a = std::max(wrect.L, br.L);
+                    const float b = std::min(wrect.R, br.R);
+                    const bool yOverlap = (br.T < wrect.B) && (br.B > wrect.T);
+                    if (yOverlap && a < b) cover.push_back({ a,b });
+                }
+
+                if (cover.size() > 1)
+                {
+                    std::sort(cover.begin(), cover.end(), [](auto& x, auto& y) { return x.a < y.a; });
+                    std::vector<Interval> merged;
+                    for (auto& iv : cover)
+                    {
+                        if (merged.empty() || iv.a > merged.back().b) merged.push_back(iv);
+                        else merged.back().b = std::max(merged.back().b, iv.b);
+                    }
+                    cover.swap(merged);
+                }
+
+                if (wrect.T + bh < wrect.B)
+                {
+                    IRECT bottom(wrect.L, wrect.T + bh, wrect.R, wrect.B);
+                    g.FillRect(colorWhite(note), bottom);
+                }
+
+                const float topY = wrect.T;
+                const float botY = std::min(wrect.T + bh, wrect.B);
+                auto drawSlice = [&](float a, float b)
+                    {
+                        if (a < b) g.FillRect(colorWhite(note), IRECT(a, topY, b, botY));
+                    };
+
+                if (botY > topY)
+                {
+                    float cursor = wrect.L;
+                    for (auto& iv : cover)
+                    {
+                        drawSlice(cursor, iv.a);
+                        cursor = std::max(cursor, iv.b);
+                    }
+                    drawSlice(cursor, wrect.R);
+                }
+            }
+
+            for (const auto& br : blackRectsAll)
+            {
+                if (!br.paint) continue;
+                g.FillRect(colorBlack(br.note), IRECT(br.L, br.T, br.R, br.B));
+            }
+        }),
+        kNoTag)->SetIgnoreMouse(true);
+}
+
+/** Настраивает QWERTY клавиатуру для MIDI ввода */
+static void SetupQwertyKeyboard(IGraphics* pGraphics, int kMinNote, int kMaxNote, TemplateProject* plugin)
+{
+    constexpr int kQwertyStartBase = 36; // C2
+    auto qwertyBase = std::make_shared<int>(kQwertyStartBase);
+    auto held = std::make_shared<std::array<bool, 128>>();
+    held->fill(false);
+
+    pGraphics->SetKeyHandlerFunc(
+        [pGraphics, qwertyBase, held, kMinNote, kMaxNote, plugin](const IKeyPress& key, bool isUp) -> bool
+        {
+            auto clampPitch = [&](int p) { return std::clamp(p, kMinNote, kMaxNote); };
+
+            auto send = [&](int pitch, bool on)
+                {
+                    pitch = clampPitch(pitch);
+                    if (on)
+                    {
+                        if ((*held)[pitch]) return;
+                        (*held)[pitch] = true;
+                        IMidiMsg m; m.MakeNoteOnMsg(pitch, 127, 0);
+                        plugin->SendMidiMsgFromUI(m);
+                        if (auto* c = pGraphics->GetControlWithTag(kCtrlTagKeyboard))
+                            c->As<IVKeyboardControl>()->SetNoteFromMidi(pitch, true);
+                    }
+                    else
+                    {
+                        if (!(*held)[pitch]) return;
+                        (*held)[pitch] = false;
+                        IMidiMsg m; m.MakeNoteOffMsg(pitch, 0);
+                        plugin->SendMidiMsgFromUI(m);
+                        if (auto* c = pGraphics->GetControlWithTag(kCtrlTagKeyboard))
+                            c->As<IVKeyboardControl>()->SetNoteFromMidi(pitch, false);
+                    }
+                };
+
+            if (isUp)
+            {
+                if (key.VK == kVK_Z) { *qwertyBase = std::max(kMinNote, *qwertyBase - 12); return true; }
+                if (key.VK == kVK_X) { *qwertyBase = std::min(kMaxNote - 14, *qwertyBase + 12); return true; }
+            }
+
+            int off = -999;
+            switch (key.VK)
+            {
+            case kVK_A: off = 0; break;
+            case kVK_W: off = 1; break;
+            case kVK_S: off = 2; break;
+            case kVK_E: off = 3; break;
+            case kVK_D: off = 4; break;
+            case kVK_F: off = 5; break;
+            case kVK_T: off = 6; break;
+            case kVK_G: off = 7; break;
+            case kVK_Y: off = 8; break;
+            case kVK_H: off = 9; break;
+            case kVK_U: off = 10; break;
+            case kVK_J: off = 11; break;
+            case kVK_K: off = 12; break;
+            case kVK_O: off = 13; break;
+            case kVK_L: off = 14; break;
+            default: return false;
+            }
+
+            const int pitch = *qwertyBase + off;
+            send(pitch, !isUp);
+            return true;
+        });
+}
+#endif // IPLUG_EDITOR
+
+// ==========================
+// КОНСТРУКТОР И ИНИЦИАЛИЗАЦИЯ
+// ==========================
+
+TemplateProject::TemplateProject(const InstanceInfo& info)
+    : iplug::Plugin(info, MakeConfig(kNumParams, kNumPresets))
+{
+    // Инициализация параметров
+    GetParam(kParamGain)->InitDouble("Gain", 0., 0., 100.0, 0.01, "%");
+
+    // Загрузка аудиосемплов (выполняется один раз, не в RT-потоке)
+    gKit.Add(kKickNote, kKickPath, "kick");
+    gKit.Add(kSnareNote, kSnarePath, "snare_close");
+    gKit.Add(kSnareNote, kSnareRoomPath, "snare_room"); // та же нота, второй слой
+    gKit.Add(kTomNote, kTomPath, "tom_close");  // новый том (floor tom) — close
+    gKit.Add(kTomNote, kTomRoomPath, "tom_room");   // новый том (floor tom) — room (та же нота)
+    gKit.Add(kCrashNote, kCrashPath, "crash");
+
+#if IPLUG_EDITOR
+    // Настройка графического интерфейса
+    mMakeGraphicsFunc = [&]() {
+        return MakeGraphics(*this, PLUG_WIDTH, PLUG_HEIGHT, PLUG_FPS, GetScaleForScreen(PLUG_WIDTH, PLUG_HEIGHT));
+        };
+
+    // Основная функция разметки UI
+    mLayoutFunc = [&](IGraphics* pGraphics)
+        {
+            // Базовые настройки UI
+            pGraphics->AttachCornerResizer(EUIResizerMode::Scale, false);
+            pGraphics->AttachPanelBackground(COLOR_BLACK);
+            pGraphics->LoadFont("Roboto-Regular", ROBOTO_FN);
+
+            // Создание стиля для пэдов
+            const IVStyle padStyle = CreatePadStyle();
+
+            // Определение областей UI
+            const IRECT bounds = pGraphics->GetBounds();
+            const IRECT innerBounds = bounds;
+            const IRECT bottomRow = innerBounds.GetFromBottom(140);
+            const IRECT keyboardBounds = bottomRow;
+            const IRECT sliderBounds = innerBounds.GetFromLeft(150).GetMidVPadded(100);
+            const IRECT versionBounds = innerBounds.GetFromTRHC(300, 20);
+            const IRECT titleBounds = innerBounds.GetCentredInside(200, 50);
+            const IRECT helloBounds = innerBounds.GetCentredInside(200, 30).GetVShifted(40);
+            const IRECT knobBounds = bounds.GetCentredInside(120).GetVShifted(-100);
+
+            // Загрузка фоновых изображений
+            const IBitmap bgBmp = pGraphics->LoadBitmap(IMG_BUTTON_FN, 1);
+            const IBitmap fgBmp = pGraphics->LoadBitmap(IMG_FOREGROUND_FN, 1);
+
+            // Фоновые изображения (не ловят мышь)
+            pGraphics->AttachControl(
+                new ILambdaControl(bounds, [bgBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+                    {
+                        if (!bgBmp.GetAPIBitmap()) return;
+                        g.DrawFittedBitmap(bgBmp, r);
+                    }), kCtrlTagBgImage)->SetIgnoreMouse(true);
+
+            /** Пример второго слоя (закомментировано)
+            pGraphics->AttachControl(
+              new ILambdaControl(bounds, [fgBmp](ILambdaControl*, IGraphics& g, IRECT& r)
+              {
+                if (!fgBmp.GetAPIBitmap()) return;
+                g.DrawFittedBitmap(fgBmp, r);
+              }), kCtrlTagFgImage)->SetIgnoreMouse(true);
+            */
+
+            // Создание барабанных пэдов
+            CreateDrumPads(pGraphics, padStyle);
+
+            // Создание MIDI клавиатуры
+            const int kMinNote = 24;
+            const int kMaxNote = 72;
+            pGraphics->AttachControl(new IVKeyboardControl(keyboardBounds, kMinNote, kMaxNote), kCtrlTagKeyboard);
+
+            // Создание оверлея с заливкой назначенных клавиш
+            CreateKeyboardOverlay(pGraphics, keyboardBounds, kMinNote, kMaxNote);
+
+            // Настройка QWERTY клавиатуры для MIDI ввода
+            SetupQwertyKeyboard(pGraphics, kMinNote, kMaxNote, this);
+
+            // Создание остальных UI элементов
+            pGraphics->AttachControl(new IVSliderControl(sliderBounds, kParamGain), kCtrlTagSlider);
+            pGraphics->AttachControl(new IVKnobControl(knobBounds, kParamGain), kCtrlTagKnob);
+            pGraphics->AttachControl(new ITextControl(titleBounds, "TemplateProject", IText(30)), kCtrlTagTitle);
+            pGraphics->AttachControl(new ITextControl(helloBounds, "Привет!", IText(24, COLOR_BLACK)), kCtrlTagHello);
+
+            // Информация о версии
+            WDL_String buildInfoStr;
+            GetBuildInfoStr(buildInfoStr, __DATE__, __TIME__);
+            pGraphics->AttachControl(new ITextControl(versionBounds, buildInfoStr.Get(), DEFAULT_TEXT.WithAlign(EAlign::Far)), kCtrlTagVersionNumber);
+        };
+#endif // IPLUG_EDITOR
+}
+
+// ==========================
+// ОБРАБОТКА UI СОБЫТИЙ
+// ==========================
+#if IPLUG_EDITOR
+void TemplateProject::OnParentWindowResize(int width, int height)
+{
+    if (auto* ui = GetUI())
+        ui->Resize(width, height, ui->GetDrawScale(), true);
+}
+#endif
+
+// ==========================
+// ОБРАБОТКА АУДИО (DSP)
+// ==========================
+#if IPLUG_DSP
+
+/** Инициализация DSP при сбросе плагина */
+void TemplateProject::OnReset()
+{
+    gKit.Prepare(GetSampleRate());
+}
+
+/** Обработка MIDI сообщений */
+void TemplateProject::ProcessMidiMsg(const IMidiMsg& msg)
+{
+    // Триггерим семплы только по NoteOn с ненулевой скоростью
+    if (msg.StatusMsg() == IMidiMsg::kNoteOn && msg.Velocity() > 0)
+        gKit.Trigger(msg.NoteNumber());
+
+    // NoteOff и другие сообщения игнорируем — one-shot семплы доигрывают до конца
+}
+
+/** Основная функция обработки аудио */
+void TemplateProject::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
+{
+    const int nChans = NOutChansConnected();
+    const double gain = GetParam(kParamGain)->Value() / 100.0;
+
+    // Проходной сигнал с применением гейна
+    for (int s = 0; s < nFrames; ++s)
+    {
+        for (int c = 0; c < nChans; ++c)
+            outputs[c][s] = inputs[c][s] * gain;
+    }
+
+    // Наложение всех активных семплов (с индивидуальными громкостями из UI)
+    gKit.Process(outputs, nChans, nFrames);
+}
+#endif // IPLUG_DSP
