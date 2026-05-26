@@ -665,6 +665,8 @@ namespace {
 
     struct OneShotPlayer
     {
+        static constexpr int kMaxVoices = 6;
+
         void SetSample(const AudioFile<SampleT>& af)
         {
             mSrcSR = af.getSampleRate();
@@ -684,54 +686,65 @@ namespace {
 
         void Trigger(float vel01)
         {
-            mVel.store(std::clamp(vel01, 0.f, 1.f), std::memory_order_release);
-            mPos.store(0.0, std::memory_order_release);
-            mPlaying.store(true, std::memory_order_release);
+            // Find a free voice; if all busy, steal the one furthest along (oldest hit)
+            int slot = -1;
+            double maxPos = -1.0;
+            for (int v = 0; v < kMaxVoices; ++v)
+            {
+                if (!mVoices[v].playing) { slot = v; break; }
+                if (mVoices[v].pos > maxPos) { maxPos = mVoices[v].pos; slot = v; }
+            }
+            mVoices[slot].vel = std::clamp(vel01, 0.f, 1.f);
+            mVoices[slot].pos = 0.0;
+            mVoices[slot].playing = true;
         }
 
         void Process(HostSample** outputs, int nOutChans, int nFrames, float gain = 1.0f,
             HostSample** tap = nullptr)
         {
-            if (!mPlaying.load(std::memory_order_acquire) || mBuf.empty()) return;
+            if (mBuf.empty()) return;
+            const double lenM1 = (double)(mLen - 1);
 
-            const float vel = mVel.load(std::memory_order_acquire);
-            const float gtot = gain * vel;
-
-            for (int i = 0; i < nFrames; ++i)
+            for (int v = 0; v < kMaxVoices; ++v)
             {
-                double pos = mPos.load(std::memory_order_relaxed);
-                if (pos >= (double)(mLen - 1)) { mPlaying.store(false, std::memory_order_release); break; }
+                Voice& voice = mVoices[v];
+                if (!voice.playing) continue;
 
-                const size_t i0 = (size_t)pos;
-                const double frac = pos - (double)i0;
+                const float gtot = gain * voice.vel;
+                double pos = voice.pos;
 
-                for (int outCh = 0; outCh < nOutChans; ++outCh)
+                for (int i = 0; i < nFrames; ++i)
                 {
-                    const int srcCh = (mNumCh == 1 ? 0 : (outCh < mNumCh ? outCh : 0));
-                    const SampleT s0 = mBuf[srcCh][i0];
-                    const SampleT s1 = mBuf[srcCh][i0 + 1];
-                    const float s = (float)((1.0 - frac) * s0 + frac * s1) * gtot;
+                    if (pos >= lenM1) { voice.playing = false; break; }
 
-                    if (outputs) outputs[outCh][i] += (HostSample)s; // null-safe
-                    if (tap)     tap[outCh][i] += (HostSample)s;
+                    const size_t i0 = (size_t)pos;
+                    const double frac = pos - (double)i0;
+
+                    for (int outCh = 0; outCh < nOutChans; ++outCh)
+                    {
+                        const int srcCh = (mNumCh == 1 ? 0 : (outCh < mNumCh ? outCh : 0));
+                        const float s = (float)((1.0 - frac) * mBuf[srcCh][i0] + frac * mBuf[srcCh][i0 + 1]) * gtot;
+                        if (outputs) outputs[outCh][i] += (HostSample)s;
+                        if (tap)     tap[outCh][i] += (HostSample)s;
+                    }
+                    pos += mStep;
                 }
-
-                pos += mStep;
-                mPos.store(pos, std::memory_order_relaxed);
+                voice.pos = pos;
             }
         }
 
     private:
+        struct Voice { double pos = 0.0; float vel = 1.0f; bool playing = false; };
+
         std::vector<std::vector<SampleT>> mBuf;
-        std::atomic<bool>  mPlaying{ false };
-        std::atomic<double> mPos{ 0.0 };
-        std::atomic<float> mVel{ 1.0f };
         int    mNumCh = 0;
         int    mLen = 0;
         int    mSrcSR = 0;
         double mHostSR = 0.0;
         double mStep = 1.0;
+        Voice  mVoices[kMaxVoices] = {};
     };
+
 
     struct TagTap { HostSample** tap; const char* tag; };
 
@@ -837,6 +850,8 @@ namespace {
             mEntries.clear();
         }
 
+        bool IsEmpty() const { return mEntries.empty(); }
+
     private:
         std::vector<std::unique_ptr<Entry>> mEntries;
     };
@@ -940,8 +955,7 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
 
 
 
-
-
+static std::string gKitLoadedPath;
 
 
 // ---------- SNDLIB loader helper (place above TemplateProject ctor) ----------
@@ -949,11 +963,19 @@ static bool LoadSndlibAndPopulateKit(const char* fullPath)
 {
     if (!fullPath || !*fullPath) return false;
 
+
+    // If the same file is already loaded, reuse the existing kit.
+   // Multiple plugin instances share gKit; no need to reload identical data.
+    if (gKitLoadedPath == fullPath && !gKit.IsEmpty())
+        return true;
+
+
     auto pack = LoadPackFromPath(fullPath);
     if (!pack.ok)
         return false;
 
     gKit.Clear();
+    gKitLoadedPath = fullPath;
 
     auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag)
         {
@@ -2431,8 +2453,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
 
 
 
-    // ---- ДОБАВЛЕНО: очистить global DrumKit перед наполнением (фикс “нарастающей громкости” в DAW)
-    gKit.Clear();
+    
 
     // --- ПАРАМЕТРЫ ---
     GetParam(kParamKick)->InitDouble("Kick Level", 0.75, 0.0, 1.0, 0.001, "");
