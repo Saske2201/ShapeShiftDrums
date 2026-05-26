@@ -169,28 +169,9 @@ static bool FileExists_(const char* path)
 }
 
 
-static bool LoadSndlibAndPopulateKit(const char* fullPath);
 
 
-bool TemplateProject::TryLoadSndlib_(const char* path)
-{
-    if (!path || !*path) return false;
 
-    std::string full(path);
-
-    // принимаем .sndlib и .sndblib
-    if (!(EndsWithNoCase_(full, ".sndlib") || EndsWithNoCase_(full, ".sndblib")))
-        return false;
-
-    if (!FileExists_(full.c_str()))
-        return false;
-
-    const bool ok = LoadSndlibAndPopulateKit(full.c_str());
-    mSndLibReady.store(ok, std::memory_order_release);
-    if (ok)
-        mSndLibPath.Set(full.c_str());
-    return ok;
-}
 
 
 
@@ -856,11 +837,31 @@ namespace {
         std::vector<std::unique_ptr<Entry>> mEntries;
     };
 
-    static DrumKit gKit;
+  
 
 } // namespace
 
+static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath);
 
+bool TemplateProject::TryLoadSndlib_(const char* path)
+{
+    if (!path || !*path) return false;
+
+    std::string full(path);
+
+    // принимаем .sndlib и .sndblib
+    if (!(EndsWithNoCase_(full, ".sndlib") || EndsWithNoCase_(full, ".sndblib")))
+        return false;
+
+    if (!FileExists_(full.c_str()))
+        return false;
+
+    const bool ok = LoadSndlibAndPopulateKit(*static_cast<DrumKit*>(mKitOpaque), full.c_str());
+    mSndLibReady.store(ok, std::memory_order_release);
+    if (ok)
+        mSndLibPath.Set(full.c_str());
+    return ok;
+}
 
 // === INSERT in TemplateProject.cpp (методы класса) ===
 void TemplateProject::ShowSndlibModal_()
@@ -955,27 +956,21 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
 
 
 
-static std::string gKitLoadedPath;
+
 
 
 // ---------- SNDLIB loader helper (place above TemplateProject ctor) ----------
-static bool LoadSndlibAndPopulateKit(const char* fullPath)
+static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath)
 {
     if (!fullPath || !*fullPath) return false;
 
-
-    // If the same file is already loaded, reuse the existing kit.
-   // Multiple plugin instances share gKit; no need to reload identical data.
-    if (gKitLoadedPath == fullPath && !gKit.IsEmpty())
-        return true;
 
 
     auto pack = LoadPackFromPath(fullPath);
     if (!pack.ok)
         return false;
 
-    gKit.Clear();
-    gKitLoadedPath = fullPath;
+    kit.Clear();
 
     auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag)
         {
@@ -991,7 +986,7 @@ static bool LoadSndlibAndPopulateKit(const char* fullPath)
                 DBGMSG("not a RIFF/WAVE inside: %s\n", pathInPack); return;
             }
 
-            gKit.AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag);
+            kit.AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag);
         };
 
     // CLOSE
@@ -2425,13 +2420,18 @@ public:
 
 #endif // IPLUG_EDITOR
 
+TemplateProject::~TemplateProject()
+{
+    delete static_cast<DrumKit*>(mKitOpaque);
+}
+
 //======================================================================
 // 4) TemplateProject: КОНСТРУКТОР И МЕТОДЫ
 //======================================================================
 TemplateProject::TemplateProject(const InstanceInfo& info)
     : iplug::Plugin(info, MakeConfig(kNumParams, kNumPresets))
 {
-
+    mKitOpaque = new DrumKit();
     // === read saved sndlib path once per process and try to load ===
     if (!sTriedReadPrefs_.exchange(true, std::memory_order_acq_rel))
     {
@@ -2522,7 +2522,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                     DBGMSG("not a RIFF/WAVE inside: %s\n", pathInPack); return;
                 }
 
-                gKit.AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag);
+                static_cast<DrumKit*>(mKitOpaque)->AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag);
             };
 
         // 3) Замените старые *_data на пути внутри контейнера (точно как в структуре, что паковал ваш скрипт)
@@ -2843,7 +2843,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
 #if ENABLE_KB_OVERLAY
             {
                 // список назначенных нот из набора семплов (цветим только их)
-                const auto sampleNotes = gKit.Notes();
+                const auto sampleNotes = static_cast<DrumKit*>(mKitOpaque)->Notes();
 
                 auto* pKBOverlay = pGraphics->AttachControl(
                     new ILambdaControl(
@@ -3754,7 +3754,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                         SendParameterValueFromUI(paramIdx, v);
                         const double gClose = std::max(GainFromV(v), kMinGain);
                         const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
-                        gKit.SetGainTag(gainTag, (float)(gClose * gCym));
+                        static_cast<DrumKit*>(mKitOpaque)->SetGainTag(gainTag, (float)(gClose * gCym));
                         if (auto* ui = cc->GetUI())
                             if (auto* t = ui->GetControlWithTag(valueTextTag)) {
                                 WDL_String s; FormatDBString(s, 20.0 * std::log10(gClose));
@@ -4577,7 +4577,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
 
                 // CLOSE хай-хэт = HH slider × Cymbals slider
-                gKit.SetGainTag("hi-hat_close", (float)(gHH * gCym));
+                static_cast<DrumKit*>(mKitOpaque)->SetGainTag("hi-hat_close", (float)(gHH * gCym));
 
                 // (опционально) обновим поле dB у HH
                 if (auto* ui = cc->GetUI())
@@ -4825,7 +4825,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 const double gCrashL = std::max(GainFromV(v), kMinGain);
                 const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
                 // Итого: CrashL_close подчинён общему Cymbals (как HH)
-                gKit.SetGainTag("crashL_close", (float)(gCrashL * gCym));
+                static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashL_close", (float)(gCrashL * gCym));
 
                 if (auto* ui = cc->GetUI())
                     if (auto* t = ui->GetControlWithTag(kCtrlTagCrashLValueText)) {
@@ -5306,7 +5306,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                     GetParam(kParamKick)->SetNormalized(v);
                     SendParameterValueFromUI(kParamKick, v);
                     const double gain = std::max(GainFromV(v), kMinGain);
-                    gKit.SetGainTag("kick", (float)gain);
+                    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("kick", (float)gain);
 
                     const double dB = 20.0 * std::log10(gain);
                     if (auto* ui = cc->GetUI())
@@ -5327,7 +5327,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                     GetParam(kParamSnare)->SetNormalized(v);
                     SendParameterValueFromUI(kParamSnare, v);
                     const double gain = std::max(GainFromV(v), kMinGain);
-                    gKit.SetGainTag("snare_close", (float)gain);
+                    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("snare_close", (float)gain);
 
                     const double dB = 20.0 * std::log10(gain);
                     if (auto* ui = cc->GetUI())
@@ -5347,7 +5347,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 GetParam(kParamTom1)->SetNormalized(v);
                 SendParameterValueFromUI(kParamTom1, v);
                 const double gain = std::max(GainFromV(v), kMinGain);
-                gKit.SetGainTag("tom01_close", (float)gain);
+                static_cast<DrumKit*>(mKitOpaque)->SetGainTag("tom01_close", (float)gain);
                 if (auto* ui = cc->GetUI())
                     if (auto* t = ui->GetControlWithTag(kCtrlTagTom1ValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gain)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
                 });
@@ -5357,7 +5357,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 GetParam(kParamTom2)->SetNormalized(v);
                 SendParameterValueFromUI(kParamTom2, v);
                 const double gain = std::max(GainFromV(v), kMinGain);
-                gKit.SetGainTag("tom02_close", (float)gain);
+                static_cast<DrumKit*>(mKitOpaque)->SetGainTag("tom02_close", (float)gain);
                 if (auto* ui = cc->GetUI())
                     if (auto* t = ui->GetControlWithTag(kCtrlTagTom2ValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gain)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
                 });
@@ -5367,7 +5367,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 GetParam(kParamTom3)->SetNormalized(v);
                 SendParameterValueFromUI(kParamTom3, v);
                 const double gain = std::max(GainFromV(v), kMinGain);
-                gKit.SetGainTag("tom03_close", (float)gain);
+                static_cast<DrumKit*>(mKitOpaque)->SetGainTag("tom03_close", (float)gain);
                 if (auto* ui = cc->GetUI())
                     if (auto* t = ui->GetControlWithTag(kCtrlTagTom3ValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gain)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
                 });
@@ -5379,17 +5379,17 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 SendParameterValueFromUI(kParamCymbals, v);
 
                 const double gCym = std::max(GainFromV(v), kMinGain);
-                gKit.SetGainTag("crash", (float)gCym);
+                static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crash", (float)gCym);
 
                 {
                     const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
                     const double gCrashL = std::max(GainFromV(GetParam(kParamCrashLClose)->GetNormalized()), kMinGain);
-                    gKit.SetGainTag("crashL_close", (float)(gCrashL * gCym));
+                    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashL_close", (float)(gCrashL * gCym));
                 }
 
                 // ДОБАВКА: переустановим эффективный gain для хай-хэта (HH × Cym)
                 const double gHH = std::max(GainFromV(GetParam(kParamHH)->GetNormalized()), kMinGain);
-                gKit.SetGainTag("hi-hat_close", (float)(gHH * gCym));
+                static_cast<DrumKit*>(mKitOpaque)->SetGainTag("hi-hat_close", (float)(gHH * gCym));
 
                 if (auto* ui = cc->GetUI()) 
                     if (auto* t = ui->GetControlWithTag(kCtrlTagCymbalsValueText)) { WDL_String s; FormatDBString(s, 20.0 * std::log10(gCym)); t->As<IEditableTextControl>()->SetStr(s.Get()); t->SetDirty(false); }
@@ -5474,7 +5474,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                                 GetParam(paramIdx)->SetNormalized(v);
                                 SendParameterValueFromUI(paramIdx, v);
                             }
-                            gKit.SetGainTag(tag, (float)gain);
+                            static_cast<DrumKit*>(mKitOpaque)->SetGainTag(tag, (float)gain);
 
                             WDL_String s; FormatDBString(s, 20.0 * std::log10(std::max(GainFromV(v), kMinGain)));
                             tCtrl->As<IEditableTextControl>()->SetStr(s.Get());
@@ -6075,7 +6075,7 @@ void TemplateProject::OnParamChange(int paramIdx)
         {
             const double v = GetParam(pIdx)->GetNormalized();
             const double gain = std::max(GainFromV(v), kMinGain);
-            gKit.SetGainTag(tag, (float)gain);
+            static_cast<DrumKit*>(mKitOpaque)->SetGainTag(tag, (float)gain);
 
 #if IPLUG_EDITOR
             if (GetUI())
@@ -6126,7 +6126,7 @@ void TemplateProject::OnParamChange(int paramIdx)
         const double gHH = std::max(GainFromV(vHH), kMinGain);
         const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
 
-        gKit.SetGainTag("hi-hat_close", (float)(gHH * gCym));
+        static_cast<DrumKit*>(mKitOpaque)->SetGainTag("hi-hat_close", (float)(gHH * gCym));
 
 #if IPLUG_EDITOR
         if (GetUI())
@@ -6149,7 +6149,7 @@ void TemplateProject::OnParamChange(int paramIdx)
         const double v = GetParam(kParamCrashLClose)->GetNormalized();
         const double gCrashL = std::max(GainFromV(v), kMinGain);
         const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
-        gKit.SetGainTag("crashL_close", (float)(gCrashL * gCym));
+        static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashL_close", (float)(gCrashL * gCym));
 
 #if IPLUG_EDITOR
         if (GetUI())
@@ -6173,7 +6173,7 @@ void TemplateProject::OnParamChange(int paramIdx)
         const double v = GetParam(kParamCrashRClose)->GetNormalized();
         const double gClose = std::max(GainFromV(v), kMinGain);
         const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
-        gKit.SetGainTag("crashR_close", (float)(gClose * gCym));
+        static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashR_close", (float)(gClose * gCym));
 #if IPLUG_EDITOR
         if (GetUI())
         {
@@ -6193,7 +6193,7 @@ void TemplateProject::OnParamChange(int paramIdx)
         const double v = GetParam(kParamSplashClose)->GetNormalized();
         const double gClose = std::max(GainFromV(v), kMinGain);
         const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
-        gKit.SetGainTag("splash_close", (float)(gClose * gCym));
+        static_cast<DrumKit*>(mKitOpaque)->SetGainTag("splash_close", (float)(gClose * gCym));
 #if IPLUG_EDITOR
         if (GetUI())
         {
@@ -6213,7 +6213,7 @@ void TemplateProject::OnParamChange(int paramIdx)
         const double v = GetParam(kParamRideClose)->GetNormalized();
         const double gClose = std::max(GainFromV(v), kMinGain);
         const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
-        gKit.SetGainTag("ride_close", (float)(gClose * gCym)); // все ride close зоны должны быть помечены этим тегом
+        static_cast<DrumKit*>(mKitOpaque)->SetGainTag("ride_close", (float)(gClose * gCym)); // все ride close зоны должны быть помечены этим тегом
 #if IPLUG_EDITOR
         if (GetUI())
         {
@@ -6233,7 +6233,7 @@ void TemplateProject::OnParamChange(int paramIdx)
         const double v = GetParam(kParamChinaClose)->GetNormalized();
         const double gClose = std::max(GainFromV(v), kMinGain);
         const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
-        gKit.SetGainTag("china_close", (float)(gClose * gCym));
+        static_cast<DrumKit*>(mKitOpaque)->SetGainTag("china_close", (float)(gClose * gCym));
 #if IPLUG_EDITOR
         if (GetUI())
         {
@@ -6258,28 +6258,28 @@ void TemplateProject::OnParamChange(int paramIdx)
         {// ДОБАВКА: переустановить произведение для хай-хэта
         const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
         const double gHH = std::max(GainFromV(GetParam(kParamHH)->GetNormalized()), kMinGain);
-        gKit.SetGainTag("hi-hat_close", (float)(gHH * gCym));
+        static_cast<DrumKit*>(mKitOpaque)->SetGainTag("hi-hat_close", (float)(gHH * gCym));
         }
         {
             const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
             const double gCrashL = std::max(GainFromV(GetParam(kParamCrashLClose)->GetNormalized()), kMinGain);
-            gKit.SetGainTag("crashL_close", (float)(gCrashL * gCym));
+            static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashL_close", (float)(gCrashL * gCym));
         }
 
         {
             const double gCym = std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
 
             const double gCR = std::max(GainFromV(GetParam(kParamCrashRClose)->GetNormalized()), kMinGain);
-            gKit.SetGainTag("crashR_close", (float)(gCR * gCym));
+            static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashR_close", (float)(gCR * gCym));
 
             const double gSpl = std::max(GainFromV(GetParam(kParamSplashClose)->GetNormalized()), kMinGain);
-            gKit.SetGainTag("splash_close", (float)(gSpl * gCym));
+            static_cast<DrumKit*>(mKitOpaque)->SetGainTag("splash_close", (float)(gSpl * gCym));
 
             const double gRd = std::max(GainFromV(GetParam(kParamRideClose)->GetNormalized()), kMinGain);
-            gKit.SetGainTag("ride_close", (float)(gRd * gCym));
+            static_cast<DrumKit*>(mKitOpaque)->SetGainTag("ride_close", (float)(gRd * gCym));
 
             const double gChn = std::max(GainFromV(GetParam(kParamChinaClose)->GetNormalized()), kMinGain);
-            gKit.SetGainTag("china_close", (float)(gChn * gCym));
+            static_cast<DrumKit*>(mKitOpaque)->SetGainTag("china_close", (float)(gChn * gCym));
         }
 
 
@@ -6358,26 +6358,26 @@ void TemplateProject::UpdateAllRoomTagGains()
         };
 
     // маппинг: param -> drum room tag
-    gKit.SetGainTag("kick_room", gPer(kParamKickRoom));
-    gKit.SetGainTag("snare_room", gPer(kParamSnareRoom));
-    gKit.SetGainTag("racktom1_room", gPer(kParamTom1Room));
-    gKit.SetGainTag("racktom2_room", gPer(kParamTom2Room));
-    gKit.SetGainTag("tom_room", gPer(kParamTom3Room)); // Floor Tom
-    gKit.SetGainTag("crashL_room", gPer(kParamCrashLRoom));
-    gKit.SetGainTag("crashR_room", gPer(kParamCrashRRoom));
-    gKit.SetGainTag("china_room", gPer(kParamChinaRoom));
-    gKit.SetGainTag("splash_room", gPer(kParamSplashRoom));
-    gKit.SetGainTag("ride_room", gPer(kParamRideRoom));
-    gKit.SetGainTag("hihat_room", gPer(kParamHihatRoom));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("kick_room", gPer(kParamKickRoom));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("snare_room", gPer(kParamSnareRoom));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("racktom1_room", gPer(kParamTom1Room));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("racktom2_room", gPer(kParamTom2Room));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("tom_room", gPer(kParamTom3Room)); // Floor Tom
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashL_room", gPer(kParamCrashLRoom));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashR_room", gPer(kParamCrashRRoom));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("china_room", gPer(kParamChinaRoom));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("splash_room", gPer(kParamSplashRoom));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("ride_room", gPer(kParamRideRoom));
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("hihat_room", gPer(kParamHihatRoom));
 
-    gKit.SetGainTag("crashR_close", gCrashR * gCym);
-    gKit.SetGainTag("splash_close", gSplash * gCym);
-    gKit.SetGainTag("ride_close", gRide * gCym);   // включает ВСЕ ride close зоны
-    gKit.SetGainTag("china_close", gChina * gCym);
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("crashR_close", gCrashR * gCym);
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("splash_close", gSplash * gCym);
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("ride_close", gRide * gCym);   // включает ВСЕ ride close зоны
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("china_close", gChina * gCym);
 
 
     // Если позже появятся новые теги (hihat_room/splash_room/ride_room/china_room) — просто допиши:
-    // gKit.SetGainTag("hihat_room",   gPer(kParamHihatRoom));
+    // static_cast<DrumKit*>(mKitOpaque)->SetGainTag("hihat_room",   gPer(kParamHihatRoom));
     // ...
 }
 
@@ -6440,7 +6440,7 @@ void TemplateProject::OnReset()
 
     // Подготовка движков/обработок к текущему sample rate
     const double sr = GetSampleRate();
-    gKit.Prepare(sr);
+    static_cast<DrumKit*>(mKitOpaque)->Prepare(sr);
     mMasterGlue.Prepare(sr);
     mMasterTame.Prepare(sr);
 
@@ -6642,7 +6642,7 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
     // 2) Параметры HH (скейл с общим Cymbals)
     const float gHH = (float)std::max(GainFromV(GetParam(kParamHH)->GetNormalized()), kMinGain);
     const float gCym = (float)std::max(GainFromV(GetParam(kParamCymbals)->GetNormalized()), kMinGain);
-    gKit.SetGainTag("hi-hat_close", gHH * gCym);
+    static_cast<DrumKit*>(mKitOpaque)->SetGainTag("hi-hat_close", gHH * gCym);
 
     // 3) MIDI — сэмпл-точно: рендерим кусками, записывая в ТЕКУЩИЙ сдвиг внутри блока
     std::vector<iplug::IMidiMsg> blockMsgs;
@@ -6683,7 +6683,7 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
             sample* chinaCloseTap[2] = { mChinaL.data() + writeOfs, mChinaR.data() + writeOfs };
 
             // Синтез в taps (OH-bus «crash» отдельный, листья не суммируем внутрь!)
-            gKit.Process(nullptr, 2, n, {
+            static_cast<DrumKit*>(mKitOpaque)->Process(nullptr, 2, n, {
                 // close
                 { kickTap,          "kick"         },
                 { snareTap,         "snare_close"  },
@@ -6726,7 +6726,7 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
         if (msg.StatusMsg() == iplug::IMidiMsg::kNoteOn && msg.Velocity() > 0)
         {
             const float vel01 = msg.Velocity() / 127.f;
-            gKit.Trigger(msg.NoteNumber(), vel01);
+            static_cast<DrumKit*>(mKitOpaque)->Trigger(msg.NoteNumber(), vel01);
 
 #if IPLUG_EDITOR
             if (IsUIReady())

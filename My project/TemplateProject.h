@@ -267,7 +267,7 @@ class TemplateProject final : public Plugin
 {
 public:
 	TemplateProject(const InstanceInfo& info);
-
+	~TemplateProject();
 
 	bool SerializeState(IByteChunk& chunk) const override;
 	int UnserializeState(const IByteChunk& chunk, int startPos) override;
@@ -399,4 +399,5 @@ private:
 
 	// NEW — мастер-гейн, читается на аудиопотоке
 	std::atomic<float> mMasterGain{ 1.f };
+	void* mKitOpaque = nullptr; // DrumKit* per-instance (type is in TemplateProject.cpp)
 };
