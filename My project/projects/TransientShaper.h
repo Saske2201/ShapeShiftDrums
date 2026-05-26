@@ -129,12 +129,17 @@ public:
             double gL = g, gR = g;
 
             // авто-компенсация среднего уровня
-            const double inMag = 0.5 * (std::abs(dryL) + std::abs(dryR));
+                // авто-компенсация среднего уровня.
+            // Вход меряем из ТОЙ ЖЕ задержанной (look-ahead) точки, что и выход,
+            // иначе на холодном старте mMeanIn растёт, пока mMeanOut залипает на нуле
+            // (буфер ещё в нулях) → tgt взрывается → треск на первом транзиенте.
+            const double inMag = 0.5 * (std::abs(laL) + std::abs(laR));
             const double outMag = 0.5 * (std::abs(laL) * gL + std::abs(laR) * gR);
             mMeanIn += (inMag - mMeanIn) * aComp;
             mMeanOut += (outMag - mMeanOut) * aComp;
             const double tgt = (mMeanOut > 1e-6 ? mMeanIn / mMeanOut : 1.0);
             mComp += (tgt - mComp) * aComp;
+            mComp = std::clamp(mComp, 0.1, 10.0); // страховка от разгона авто-гейна
             gL *= mComp; gR *= mComp;
 
             // применяем к look-ahead + мягкий клип
