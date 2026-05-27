@@ -732,21 +732,23 @@ namespace {
     struct DrumKit
     {
         struct Entry {
-            int note = 0;
+            std::atomic<int> note{ 0 };  // atomic: читается аудиопотоком, пишется UI-потоком
             std::string path;
             std::string tag;
+            std::string sampleGroup;     // группа семпла ("kick","snare","tom1",...,"hhOpen")
             std::unique_ptr<AudioFile<SampleT>> file;
             std::unique_ptr<OneShotPlayer>      player;
             std::atomic<float> gain{ 1.0f };
         };
 
 
-        void Add(int note, const char* path, const char* tag)
+        void Add(int note, const char* path, const char* tag, const char* group = nullptr)
         {
             auto e = std::make_unique<Entry>();
-            e->note = note;
+            e->note.store(note, std::memory_order_relaxed);
             e->path = path ? path : "";
             e->tag = tag ? tag : "";
+            e->sampleGroup = group ? group : "";
             e->file = std::make_unique<AudioFile<SampleT>>();
             e->player = std::make_unique<OneShotPlayer>();
 
@@ -761,11 +763,14 @@ namespace {
             }
         }
 
-        void AddFromMemory(int note, const uint8_t* bytes, int length, const char* tag)
+        // group — имя группы семпла ("kick","snare","tom1",...,"hhOpen")
+        void AddFromMemory(int note, const uint8_t* bytes, int length,
+                           const char* tag, const char* group = nullptr)
         {
             auto e = std::make_unique<Entry>();
-            e->note = note;
+            e->note.store(note, std::memory_order_relaxed);
             e->tag = tag ? tag : "";
+            e->sampleGroup = group ? group : "";
             e->file = std::make_unique<AudioFile<SampleT>>();
             e->player = std::make_unique<OneShotPlayer>();
 
@@ -790,7 +795,28 @@ namespace {
         void Trigger(int note, float vel01)
         {
             for (auto& e : mEntries)
-                if (e->note == note) e->player->Trigger(vel01);
+                if (e->note.load(std::memory_order_relaxed) == note)
+                    e->player->Trigger(vel01);
+        }
+
+        // Изменить MIDI-ноту для всех записей с данной группой (thread-safe с аудиопотоком)
+        void SetNoteForGroup(const char* group, int newNote)
+        {
+            if (!group) return;
+            const int clamped = std::clamp(newNote, 0, 127);
+            for (auto& e : mEntries)
+                if (e->sampleGroup == group)
+                    e->note.store(clamped, std::memory_order_relaxed);
+        }
+
+        // Получить ноту первой записи группы (-1 если не найдена)
+        int GetNoteForGroup(const char* group) const
+        {
+            if (!group) return -1;
+            for (const auto& e : mEntries)
+                if (e->sampleGroup == group)
+                    return e->note.load(std::memory_order_relaxed);
+            return -1;
         }
 
         void SetGainTag(const char* tag, float g)
@@ -821,7 +847,7 @@ namespace {
         std::vector<int> Notes() const
         {
             std::vector<int> out; out.reserve(mEntries.size());
-            for (auto& e : mEntries) out.push_back(e->note);
+            for (auto& e : mEntries) out.push_back(e->note.load(std::memory_order_relaxed));
             return out;
         }
 
@@ -841,7 +867,7 @@ namespace {
 
 } // namespace
 
-static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath);
+static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const DrumNoteMap& nm);
 
 bool TemplateProject::TryLoadSndlib_(const char* path)
 {
@@ -856,7 +882,7 @@ bool TemplateProject::TryLoadSndlib_(const char* path)
     if (!FileExists_(full.c_str()))
         return false;
 
-    const bool ok = LoadSndlibAndPopulateKit(*static_cast<DrumKit*>(mKitOpaque), full.c_str());
+    const bool ok = LoadSndlibAndPopulateKit(*static_cast<DrumKit*>(mKitOpaque), full.c_str(), mNoteMap);
     mSndLibReady.store(ok, std::memory_order_release);
     if (ok)
         mSndLibPath.Set(full.c_str());
@@ -917,9 +943,86 @@ void TemplateProject::PromptSndlibIfNeeded_()
 #endif
 }
 
+//======================================================================
+// NOTE MAP — публичные методы
+//======================================================================
 
+// Применяет весь mNoteMap к DrumKit (устанавливает ноты для всех групп)
+void TemplateProject::ApplyNoteMap()
+{
+    auto* kit = static_cast<DrumKit*>(mKitOpaque);
+    if (!kit) return;
+    kit->SetNoteForGroup("kick",       mNoteMap.kick);
+    kit->SetNoteForGroup("snare",      mNoteMap.snare);
+    kit->SetNoteForGroup("tom1",       mNoteMap.tom1);
+    kit->SetNoteForGroup("tom2",       mNoteMap.tom2);
+    kit->SetNoteForGroup("tom3",       mNoteMap.tom3);
+    kit->SetNoteForGroup("crashL",     mNoteMap.crashL);
+    kit->SetNoteForGroup("crashR",     mNoteMap.crashR);
+    kit->SetNoteForGroup("china",      mNoteMap.china);
+    kit->SetNoteForGroup("splash",     mNoteMap.splash);
+    kit->SetNoteForGroup("rideEdge",   mNoteMap.rideEdge);
+    kit->SetNoteForGroup("rideCenter", mNoteMap.rideCenter);
+    kit->SetNoteForGroup("hhClosed",   mNoteMap.hhClosed);
+    kit->SetNoteForGroup("hhChoke",    mNoteMap.hhChoke);
+    kit->SetNoteForGroup("hhOpen",     mNoteMap.hhOpen);
+}
 
-// === SerializeState (замени внутри метода строки с Put/Get) ===
+// Изменить ноту одного семпла и обновить DrumKit + UI-кнопки пада
+void TemplateProject::SetSampleNote(const char* group, int midiNote)
+{
+    if (!group) return;
+    midiNote = std::clamp(midiNote, 0, 127);
+
+    // Обновляем поле mNoteMap по имени группы
+    int* field = nullptr;
+    if      (!strcmp(group, "kick"))       field = &mNoteMap.kick;
+    else if (!strcmp(group, "snare"))      field = &mNoteMap.snare;
+    else if (!strcmp(group, "tom1"))       field = &mNoteMap.tom1;
+    else if (!strcmp(group, "tom2"))       field = &mNoteMap.tom2;
+    else if (!strcmp(group, "tom3"))       field = &mNoteMap.tom3;
+    else if (!strcmp(group, "crashL"))     field = &mNoteMap.crashL;
+    else if (!strcmp(group, "crashR"))     field = &mNoteMap.crashR;
+    else if (!strcmp(group, "china"))      field = &mNoteMap.china;
+    else if (!strcmp(group, "splash"))     field = &mNoteMap.splash;
+    else if (!strcmp(group, "rideEdge"))   field = &mNoteMap.rideEdge;
+    else if (!strcmp(group, "rideCenter")) field = &mNoteMap.rideCenter;
+    else if (!strcmp(group, "hhClosed"))   field = &mNoteMap.hhClosed;
+    else if (!strcmp(group, "hhChoke"))    field = &mNoteMap.hhChoke;
+    else if (!strcmp(group, "hhOpen"))     field = &mNoteMap.hhOpen;
+    else return; // неизвестная группа
+
+    if (field) *field = midiNote;
+
+    // Обновляем DrumKit (thread-safe через atomic)
+    if (auto* kit = static_cast<DrumKit*>(mKitOpaque))
+        kit->SetNoteForGroup(group, midiNote);
+    // SpritePadButton не нужно обновлять отдельно:
+    // он хранит const int& на поле mNoteMap и автоматически читает новое значение.
+}
+
+// Получить текущую ноту семпла
+int TemplateProject::GetSampleNote(const char* group) const
+{
+    if (!group) return -1;
+    if      (!strcmp(group, "kick"))       return mNoteMap.kick;
+    else if (!strcmp(group, "snare"))      return mNoteMap.snare;
+    else if (!strcmp(group, "tom1"))       return mNoteMap.tom1;
+    else if (!strcmp(group, "tom2"))       return mNoteMap.tom2;
+    else if (!strcmp(group, "tom3"))       return mNoteMap.tom3;
+    else if (!strcmp(group, "crashL"))     return mNoteMap.crashL;
+    else if (!strcmp(group, "crashR"))     return mNoteMap.crashR;
+    else if (!strcmp(group, "china"))      return mNoteMap.china;
+    else if (!strcmp(group, "splash"))     return mNoteMap.splash;
+    else if (!strcmp(group, "rideEdge"))   return mNoteMap.rideEdge;
+    else if (!strcmp(group, "rideCenter")) return mNoteMap.rideCenter;
+    else if (!strcmp(group, "hhClosed"))   return mNoteMap.hhClosed;
+    else if (!strcmp(group, "hhChoke"))    return mNoteMap.hhChoke;
+    else if (!strcmp(group, "hhOpen"))     return mNoteMap.hhOpen;
+    return -1;
+}
+
+// === SerializeState ===
 bool TemplateProject::SerializeState(IByteChunk& chunk) const
 {
     // путь
@@ -927,29 +1030,70 @@ bool TemplateProject::SerializeState(IByteChunk& chunk) const
 
     // флаг ready -> int -> bytes
     const int ready = mSndLibReady.load(std::memory_order_acquire) ? 1 : 0;
-    chunk.PutBytes(&ready, (int)sizeof(ready));   // <-- ВАЖНО: PutBytes
+    chunk.PutBytes(&ready, (int)sizeof(ready));
+
+    // === NOTE MAP (14 × int) ===
+    chunk.PutBytes(&mNoteMap.kick,       (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.snare,      (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.tom1,       (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.tom2,       (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.tom3,       (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.crashL,     (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.crashR,     (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.china,      (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.splash,     (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.rideEdge,   (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.rideCenter, (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.hhClosed,   (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.hhChoke,    (int)sizeof(int));
+    chunk.PutBytes(&mNoteMap.hhOpen,     (int)sizeof(int));
 
     return true;
 }
 
 
-// === UnserializeState (замени внутри метода строки с Put/Get) ===
+// === UnserializeState ===
 int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
 {
     WDL_String path;
     int pos = chunk.GetStr(path, startPos);       // путь
 
     int readyInt = 0;
-    pos = chunk.GetBytes(&readyInt, (int)sizeof(readyInt), pos); // <-- ВАЖНО: GetBytes
+    pos = chunk.GetBytes(&readyInt, (int)sizeof(readyInt), pos);
     const bool ready = (readyInt != 0);
 
     if (path.GetLength())
         mSndLibPath.Set(path.Get());
 
-    // проверяем и пытаемся загрузить
+    // === NOTE MAP — читаем 14 нот (с защитой от старых пресетов без карты) ===
+    auto readNote = [&](int& field) {
+        int tmp = field; // дефолт
+        int np = chunk.GetBytes(&tmp, (int)sizeof(int), pos);
+        if (np < 0) return; // старый пресет — используем дефолт
+        field = std::clamp(tmp, 0, 127);
+        pos = np;
+    };
+    readNote(mNoteMap.kick);
+    readNote(mNoteMap.snare);
+    readNote(mNoteMap.tom1);
+    readNote(mNoteMap.tom2);
+    readNote(mNoteMap.tom3);
+    readNote(mNoteMap.crashL);
+    readNote(mNoteMap.crashR);
+    readNote(mNoteMap.china);
+    readNote(mNoteMap.splash);
+    readNote(mNoteMap.rideEdge);
+    readNote(mNoteMap.rideCenter);
+    readNote(mNoteMap.hhClosed);
+    readNote(mNoteMap.hhChoke);
+    readNote(mNoteMap.hhOpen);
+
+    // проверяем и пытаемся загрузить (LoadSndlib применит mNoteMap)
     mSndLibReady.store(false, std::memory_order_release);
     if (mSndLibPath.GetLength())
         TryLoadSndlib_(mSndLibPath.Get());
+    else
+        ApplyNoteMap(); // kit без звуков, но ноты применяем на случай, если звуки загрузятся позже
 
     return pos;
 }
@@ -960,11 +1104,9 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
 
 
 // ---------- SNDLIB loader helper (place above TemplateProject ctor) ----------
-static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath)
+static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const DrumNoteMap& nm)
 {
     if (!fullPath || !*fullPath) return false;
-
-
 
     auto pack = LoadPackFromPath(fullPath);
     if (!pack.ok)
@@ -972,7 +1114,8 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath)
 
     kit.Clear();
 
-    auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag)
+    // group — имя группы ("kick","snare",...) для SetNoteForGroup()
+    auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag, const char* group)
         {
             const SsdEntry* e = pack.archive.Find(pathInPack);
             if (!e) { DBGMSG("Missing in pack: %s\n", pathInPack); return; }
@@ -986,43 +1129,43 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath)
                 DBGMSG("not a RIFF/WAVE inside: %s\n", pathInPack); return;
             }
 
-            kit.AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag);
+            kit.AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag, group);
         };
 
-    // CLOSE
-    AddFromPackedHeader(kKickNote, "Kick_Close.cpp", "kick");
-    AddFromPackedHeader(kSnareNote, "Snare_Close.cpp", "snare_close");
-    AddFromPackedHeader(kTom1Note, "RackTom1_Close.cpp", "tom01_close");
-    AddFromPackedHeader(kTom2Note, "RackTom2_Close.cpp", "tom02_close");
-    AddFromPackedHeader(kTom3Note, "FloorTom_Close.cpp", "tom03_close");
-    AddFromPackedHeader(kCrashLNote, "CrashL_Close.cpp", "crashL_close");
-    AddFromPackedHeader(kCrashRNote, "CrashR_Close.cpp", "crashR_close");
-    AddFromPackedHeader(kChinaNote, "China_Close.cpp", "china_close");
-    AddFromPackedHeader(kSplashNote, "Splash_Close.cpp", "splash_close");
-    AddFromPackedHeader(kRideEdgeNote, "RideEdge_Close.cpp", "ride_close");
-    AddFromPackedHeader(kRideCenterNote, "RideCenter_Close.cpp", "ride_close");
+    // CLOSE — ноты берём из noteMap (дефолты == kXxxNote)
+    AddFromPackedHeader(nm.kick,       "Kick_Close.cpp",     "kick",         "kick");
+    AddFromPackedHeader(nm.snare,      "Snare_Close.cpp",    "snare_close",  "snare");
+    AddFromPackedHeader(nm.tom1,       "RackTom1_Close.cpp", "tom01_close",  "tom1");
+    AddFromPackedHeader(nm.tom2,       "RackTom2_Close.cpp", "tom02_close",  "tom2");
+    AddFromPackedHeader(nm.tom3,       "FloorTom_Close.cpp", "tom03_close",  "tom3");
+    AddFromPackedHeader(nm.crashL,     "CrashL_Close.cpp",   "crashL_close", "crashL");
+    AddFromPackedHeader(nm.crashR,     "CrashR_Close.cpp",   "crashR_close", "crashR");
+    AddFromPackedHeader(nm.china,      "China_Close.cpp",    "china_close",  "china");
+    AddFromPackedHeader(nm.splash,     "Splash_Close.cpp",   "splash_close", "splash");
+    AddFromPackedHeader(nm.rideEdge,   "RideEdge_Close.cpp", "ride_close",   "rideEdge");
+    AddFromPackedHeader(nm.rideCenter, "RideCenter_Close.cpp","ride_close",  "rideCenter");
 
     // ROOM
-    AddFromPackedHeader(kKickNote, "Kick_Room.cpp", "kick_room");
-    AddFromPackedHeader(kSnareNote, "Snare_Room.cpp", "snare_room");
-    AddFromPackedHeader(kTom3Note, "FloorTom_Room.cpp", "tom_room");
-    AddFromPackedHeader(kTom1Note, "RackTom1_Room.cpp", "racktom1_room");
-    AddFromPackedHeader(kTom2Note, "RackTom2_Room.cpp", "racktom2_room");
-    AddFromPackedHeader(kCrashLNote, "CrashL_Room.cpp", "crashL_room");
-    AddFromPackedHeader(kCrashRNote, "CrashR_Room.cpp", "crashR_room");
-    AddFromPackedHeader(kChinaNote, "China_Room.cpp", "china_room");
-    AddFromPackedHeader(kSplashNote, "Splash_Room.cpp", "splash_room");
-    AddFromPackedHeader(kRideEdgeNote, "RideEdge_Room.cpp", "ride_room");
-    AddFromPackedHeader(kRideCenterNote, "RideCenter_Room.cpp", "ride_room");
+    AddFromPackedHeader(nm.kick,       "Kick_Room.cpp",      "kick_room",     "kick");
+    AddFromPackedHeader(nm.snare,      "Snare_Room.cpp",     "snare_room",    "snare");
+    AddFromPackedHeader(nm.tom3,       "FloorTom_Room.cpp",  "tom_room",      "tom3");
+    AddFromPackedHeader(nm.tom1,       "RackTom1_Room.cpp",  "racktom1_room", "tom1");
+    AddFromPackedHeader(nm.tom2,       "RackTom2_Room.cpp",  "racktom2_room", "tom2");
+    AddFromPackedHeader(nm.crashL,     "CrashL_Room.cpp",    "crashL_room",   "crashL");
+    AddFromPackedHeader(nm.crashR,     "CrashR_Room.cpp",    "crashR_room",   "crashR");
+    AddFromPackedHeader(nm.china,      "China_Room.cpp",     "china_room",    "china");
+    AddFromPackedHeader(nm.splash,     "Splash_Room.cpp",    "splash_room",   "splash");
+    AddFromPackedHeader(nm.rideEdge,   "RideEdge_Room.cpp",  "ride_room",     "rideEdge");
+    AddFromPackedHeader(nm.rideCenter, "RideCenter_Room.cpp","ride_room",     "rideCenter");
 
     // HI-HAT
-    AddFromPackedHeader(kHHClosedCloseNote, "HH_Closed_Close.cpp", "hi-hat_close");
-    AddFromPackedHeader(kHHOpenCloseNote, "HH_Open_Close.cpp", "hi-hat_close");
-    AddFromPackedHeader(kHHChokeCloseNote, "HH_Choked_Close.cpp", "hi-hat_close");
+    AddFromPackedHeader(nm.hhClosed,   "HH_Closed_Close.cpp",  "hi-hat_close", "hhClosed");
+    AddFromPackedHeader(nm.hhOpen,     "HH_Open_Close.cpp",    "hi-hat_close", "hhOpen");
+    AddFromPackedHeader(nm.hhChoke,    "HH_Choked_Close.cpp",  "hi-hat_close", "hhChoke");
 
-    AddFromPackedHeader(kHHClosedCloseNote, "HH_Closed_Room.cpp", "hihat_room");
-    AddFromPackedHeader(kHHOpenCloseNote, "HH_Open_Room.cpp", "hihat_room");
-    AddFromPackedHeader(kHHChokeCloseNote, "HH_Choked_Room.cpp", "hihat_room");
+    AddFromPackedHeader(nm.hhClosed,   "HH_Closed_Room.cpp",   "hihat_room",   "hhClosed");
+    AddFromPackedHeader(nm.hhOpen,     "HH_Open_Room.cpp",     "hihat_room",   "hhOpen");
+    AddFromPackedHeader(nm.hhChoke,    "HH_Choked_Room.cpp",   "hihat_room",   "hhChoke");
 
     return true;
 }
@@ -2008,12 +2151,13 @@ private:
 class SpritePadButton final : public IControl
 {
 public:
-    SpritePadButton(const IRECT& bounds, const IBitmap& pressedBmp, int midiNote, const char* tooltip, TemplateProject& plug)
-        : IControl(bounds), mPressedBmp(pressedBmp), mNote(midiNote), mPlug(plug)
+    // noteRef — ссылка на поле mNoteMap плагина (всегда читает актуальное значение)
+    SpritePadButton(const IRECT& bounds, const IBitmap& pressedBmp,
+                    const int& noteRef, const char* tooltip, TemplateProject& plug)
+        : IControl(bounds), mPressedBmp(pressedBmp), mNoteRef(noteRef), mPlug(plug)
     {
         if (tooltip) SetTooltip(tooltip);
         SetActionFunction([](IControl* p) { SplashClickActionFunc(p); });
-
         mDblAsSingleClick = false;
     }
 
@@ -2030,7 +2174,7 @@ public:
         mHeld = true;
         SetValue(1.0);
         SetDirty(false);
-        IMidiMsg m; m.MakeNoteOnMsg(mNote, 127, 0); mPlug.SendMidiMsgFromUI(m);
+        IMidiMsg m; m.MakeNoteOnMsg(mNoteRef, 127, 0); mPlug.SendMidiMsgFromUI(m);
     }
 
     void OnMouseUp(float, float, const IMouseMod&) override
@@ -2039,7 +2183,7 @@ public:
         mHeld = false;
         SetValue(0.0);
         SetDirty(false);
-        IMidiMsg m; m.MakeNoteOffMsg(mNote, 0); mPlug.SendMidiMsgFromUI(m);
+        IMidiMsg m; m.MakeNoteOffMsg(mNoteRef, 0); mPlug.SendMidiMsgFromUI(m);
     }
 
     void OnMsgFromDelegate(int msgTag, int, const void*) override
@@ -2054,16 +2198,147 @@ public:
         }
     }
 
-    void OnMouseDblClick(float x, float y, const IMouseMod& mod) override
+    void OnMouseDblClick(float, float, const IMouseMod&) override { SetDirty(false); }
+
+    int GetCurrentNote() const { return mNoteRef; }
+
+private:
+    IBitmap   mPressedBmp;
+    const int& mNoteRef;  // non-owning ref → всегда актуальная нота из DrumNoteMap
+    bool      mHeld = false;
+    TemplateProject& mPlug;
+};
+
+//======================================================================
+// NoteSelectorControl — интерактивный виджет для смены MIDI-ноты семпла
+//======================================================================
+class NoteSelectorControl final : public IControl
+{
+public:
+    NoteSelectorControl(const IRECT& r, const char* label, int note,
+                        TemplateProject& plug, const char* group)
+        : IControl(r)
+        , mLabel(label ? label : "")
+        , mNote(note)
+        , mPlug(plug)
+        , mGroup(group ? group : "")
+    {}
+
+    void Draw(IGraphics& g) override
     {
+        // Всегда читаем актуальное значение (синхронно с mNoteMap)
+        const int currentNote = mPlug.GetSampleNote(mGroup.c_str());
+        if (currentNote >= 0) mNote = currentNote; // обновляем кэш
+
+        // Фон
+        const IColor bgNormal(200, 25, 25, 30);
+        const IColor bgHover (200, 40, 40, 50);
+        const IColor border  (180, 80, 80, 90);
+        g.FillRoundRect(IsMouseOver() ? bgHover : bgNormal, mRECT, 3.f);
+        g.DrawRoundRect(border, mRECT, 3.f);
+
+        // Текст метки (левая часть)
+        IText lblTxt(11.f, IColor(255,200,200,200), nullptr, EAlign::Near, EVAlign::Middle);
+        IRECT lblR = mRECT.GetPadded(-4.f);
+        lblR.R = lblR.L + lblR.W() * 0.48f;
+        g.DrawText(lblTxt, mLabel.c_str(), lblR);
+
+        // Текст ноты (правая часть, выделена цветом)
+        IText noteTxt(11.f, IColor(255,255,210,80), nullptr, EAlign::Near, EVAlign::Middle);
+        IRECT noteR = mRECT.GetPadded(-4.f);
+        noteR.L = noteR.L + noteR.W() * 0.50f;
+        g.DrawText(noteTxt, NoteToStr(mNote).c_str(), noteR);
+    }
+
+    void OnMouseOver(float, float, const IMouseMod&) override { SetDirty(false); }
+    void OnMouseOut() override { SetDirty(false); }
+
+    void OnMouseDown(float x, float y, const IMouseMod& mod) override
+    {
+        if (mod.R)
+        {
+            // ПКМ — сброс на дефолт
+            const int def = mPlug.GetSampleNote(mGroup.c_str());
+            // def уже хранится в mNoteMap, мы просто не меняем его —
+            // текущее значение и есть "дефолт" до смены. Для сброса
+            // можно перейти на временно хранимый дефолт:
+            return;
+        }
+
+        // ЛКМ — открыть текстовый ввод
+        if (GetUI())
+        {
+            mEditStr = std::to_string(mNote);
+            GetUI()->CreateTextEntry(*this, IText(12.f, COLOR_WHITE), mRECT, mEditStr.c_str());
+        }
+    }
+
+    void OnTextEntryCompletion(const char* txt, int) override
+    {
+        if (!txt || !*txt) return;
+        const int n = ParseMidiNote(txt);
+        if (n < 0) { SetDirty(false); return; } // невалидное значение — игнорируем
+
+        mNote = n;
+        mPlug.SetSampleNote(mGroup.c_str(), mNote);
         SetDirty(false);
     }
 
+    // Синхронизировать отображение с текущим значением в плагине
+    void SyncNote() { mNote = mPlug.GetSampleNote(mGroup.c_str()); SetDirty(false); }
+
 private:
-    IBitmap mPressedBmp;
-    int     mNote = 36;
-    bool    mHeld = false;
+    std::string mLabel;
+    int         mNote;
     TemplateProject& mPlug;
+    std::string mGroup;
+    std::string mEditStr;
+
+    // MIDI 0-127 → "C2 (36)"
+    static std::string NoteToStr(int note)
+    {
+        static const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+        const int octave = (note / 12) - 1;
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%s%d (%d)", names[note % 12], octave, note);
+        return buf;
+    }
+
+    // Разбирает строку вида "36", "C2", "D#3", "Bb2" → MIDI номер, или -1
+    static int ParseMidiNote(const char* str)
+    {
+        if (!str || !*str) return -1;
+
+        // Попытка 1: просто целое число
+        char* end = nullptr;
+        const long num = strtol(str, &end, 10);
+        // допускаем пробелы после числа
+        while (*end == ' ') ++end;
+        if (*end == '\0') return (num >= 0 && num <= 127) ? (int)num : -1;
+
+        // Попытка 2: нотное имя [A-Gb][b#][-][-2..9]
+        const char* p = str;
+        // Буква ноты
+        static const char* noteNames[] = {"C","D","E","F","G","A","B"};
+        static const int   noteSemis[] = { 0,  2,  4,  5,  7,  9, 11};
+        int semi = -1;
+        for (int i = 0; i < 7; ++i)
+            if (toupper((unsigned char)*p) == noteNames[i][0]) { semi = noteSemis[i]; break; }
+        if (semi < 0) return -1;
+        ++p;
+        // Диез/бемоль
+        if (*p == '#' || *p == 's' || *p == 'S') { semi += 1; ++p; }
+        else if (*p == 'b' || *p == 'B') { semi -= 1; ++p; }
+        // Октава (может быть отрицательной, например C-2)
+        while (*p == ' ') ++p;
+        if (*p == '\0') return -1;
+        char* oEnd = nullptr;
+        const long oct = strtol(p, &oEnd, 10);
+        while (*oEnd == ' ') ++oEnd;
+        if (*oEnd != '\0') return -1;
+        const int midiNote = (int)((oct + 1) * 12 + ((semi % 12 + 12) % 12));
+        return (midiNote >= 0 && midiNote <= 127) ? midiNote : -1;
+    }
 };
 
 static inline IRECT MakeSpriteRectFromCenter(const IBitmap& bmp, float scale, float cx, float cy)
@@ -2507,7 +2782,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
     }
     else {
         // 2) хелпер: добавить WAV, лежащий в .h/.cpp (bin2c)
-        auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag)
+        auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag, const char* group)
             {
                 const SsdEntry* e = pack.archive.Find(pathInPack);
                 if (!e) { DBGMSG("Missing in pack: %s\n", pathInPack); return; }
@@ -2522,47 +2797,42 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                     DBGMSG("not a RIFF/WAVE inside: %s\n", pathInPack); return;
                 }
 
-                static_cast<DrumKit*>(mKitOpaque)->AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag);
+                static_cast<DrumKit*>(mKitOpaque)->AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag, group);
             };
 
-        // 3) Замените старые *_data на пути внутри контейнера (точно как в структуре, что паковал ваш скрипт)
-        // Примеры (подставьте свои относительные пути .h/.cpp из пакета):
-        AddFromPackedHeader(kKickNote, "Kick_Close.cpp", "kick");
-        AddFromPackedHeader(kSnareNote, "Snare_Close.cpp", "snare_close");
+        // Используем mNoteMap (дефолты == kXxxNote)
+        const DrumNoteMap& nm = mNoteMap;
+        AddFromPackedHeader(nm.kick,       "Kick_Close.cpp",      "kick",         "kick");
+        AddFromPackedHeader(nm.snare,      "Snare_Close.cpp",     "snare_close",  "snare");
+        AddFromPackedHeader(nm.tom1,       "RackTom1_Close.cpp",  "tom01_close",  "tom1");
+        AddFromPackedHeader(nm.tom2,       "RackTom2_Close.cpp",  "tom02_close",  "tom2");
+        AddFromPackedHeader(nm.tom3,       "FloorTom_Close.cpp",  "tom03_close",  "tom3");
+        AddFromPackedHeader(nm.crashL,     "CrashL_Close.cpp",    "crashL_close", "crashL");
+        AddFromPackedHeader(nm.crashR,     "CrashR_Close.cpp",    "crashR_close", "crashR");
+        AddFromPackedHeader(nm.china,      "China_Close.cpp",     "china_close",  "china");
+        AddFromPackedHeader(nm.splash,     "Splash_Close.cpp",    "splash_close", "splash");
+        AddFromPackedHeader(nm.rideEdge,   "RideEdge_Close.cpp",  "ride_close",   "rideEdge");
+        AddFromPackedHeader(nm.rideCenter, "RideCenter_Close.cpp","ride_close",   "rideCenter");
 
-        AddFromPackedHeader(kTom1Note, "RackTom1_Close.cpp", "tom01_close");
-        AddFromPackedHeader(kTom2Note, "RackTom2_Close.cpp", "tom02_close");
-        AddFromPackedHeader(kTom3Note, "FloorTom_Close.cpp", "tom03_close");
+        AddFromPackedHeader(nm.kick,       "Kick_Room.cpp",       "kick_room",     "kick");
+        AddFromPackedHeader(nm.snare,      "Snare_Room.cpp",      "snare_room",    "snare");
+        AddFromPackedHeader(nm.tom3,       "FloorTom_Room.cpp",   "tom_room",      "tom3");
+        AddFromPackedHeader(nm.tom1,       "RackTom1_Room.cpp",   "racktom1_room", "tom1");
+        AddFromPackedHeader(nm.tom2,       "RackTom2_Room.cpp",   "racktom2_room", "tom2");
+        AddFromPackedHeader(nm.crashL,     "CrashL_Room.cpp",     "crashL_room",   "crashL");
+        AddFromPackedHeader(nm.crashR,     "CrashR_Room.cpp",     "crashR_room",   "crashR");
+        AddFromPackedHeader(nm.china,      "China_Room.cpp",      "china_room",    "china");
+        AddFromPackedHeader(nm.splash,     "Splash_Room.cpp",     "splash_room",   "splash");
+        AddFromPackedHeader(nm.rideEdge,   "RideEdge_Room.cpp",   "ride_room",     "rideEdge");
+        AddFromPackedHeader(nm.rideCenter, "RideCenter_Room.cpp", "ride_room",     "rideCenter");
 
-        AddFromPackedHeader(kCrashLNote, "CrashL_Close.cpp", "crashL_close");
-        AddFromPackedHeader(kCrashRNote, "CrashR_Close.cpp", "crashR_close");
-        AddFromPackedHeader(kChinaNote, "China_Close.cpp", "china_close");      // Close под общим "cymbals" слайдером
-        AddFromPackedHeader(kSplashNote, "Splash_Close.cpp", "splash_close");
-        AddFromPackedHeader(kRideEdgeNote, "RideEdge_Close.cpp", "ride_close");
-        AddFromPackedHeader(kRideCenterNote, "RideCenter_Close.cpp", "ride_close");
-
-        
-        AddFromPackedHeader(kKickNote, "Kick_Room.cpp", "kick_room");
-        AddFromPackedHeader(kSnareNote, "Snare_Room.cpp", "snare_room");
-        AddFromPackedHeader(kTom3Note, "FloorTom_Room.cpp", "tom_room");
-        AddFromPackedHeader(kTom1Note, "RackTom1_Room.cpp", "racktom1_room");
-        AddFromPackedHeader(kTom2Note, "RackTom2_Room.cpp", "racktom2_room");
-        AddFromPackedHeader(kCrashLNote, "CrashL_Room.cpp", "crashL_room");
-        AddFromPackedHeader(kCrashRNote, "CrashR_Room.cpp", "crashR_room");
-        AddFromPackedHeader(kChinaNote, "China_Room.cpp", "china_room"); 
-        AddFromPackedHeader(kSplashNote, "Splash_Room.cpp", "splash_room");
-        AddFromPackedHeader(kRideEdgeNote, "RideEdge_Room.cpp", "ride_room");
-        AddFromPackedHeader(kRideCenterNote, "RideCenter_Room.cpp", "ride_room");
-
-        // ---- HI-HAT: CLOSE -> общий "crash" bus; ROOM -> "hihat_room" ----
-        AddFromPackedHeader(kHHClosedCloseNote, "HH_Closed_Close.cpp", "hi-hat_close");
-        AddFromPackedHeader(kHHOpenCloseNote, "HH_Open_Close.cpp", "hi-hat_close");
-        AddFromPackedHeader(kHHChokeCloseNote, "HH_Choked_Close.cpp", "hi-hat_close");
-
-        // ROOM (все три ноты в один и тот же room-тэг)
-        AddFromPackedHeader(kHHClosedCloseNote, "HH_Closed_Room.cpp", "hihat_room");
-        AddFromPackedHeader(kHHOpenCloseNote, "HH_Open_Room.cpp", "hihat_room");
-        AddFromPackedHeader(kHHChokeCloseNote, "HH_Choked_Room.cpp", "hihat_room");
+        // ---- HI-HAT ----
+        AddFromPackedHeader(nm.hhClosed,   "HH_Closed_Close.cpp", "hi-hat_close", "hhClosed");
+        AddFromPackedHeader(nm.hhOpen,     "HH_Open_Close.cpp",   "hi-hat_close", "hhOpen");
+        AddFromPackedHeader(nm.hhChoke,    "HH_Choked_Close.cpp", "hi-hat_close", "hhChoke");
+        AddFromPackedHeader(nm.hhClosed,   "HH_Closed_Room.cpp",  "hihat_room",   "hhClosed");
+        AddFromPackedHeader(nm.hhOpen,     "HH_Open_Room.cpp",    "hihat_room",   "hhOpen");
+        AddFromPackedHeader(nm.hhChoke,    "HH_Choked_Room.cpp",  "hihat_room",   "hhChoke");
 
 
     }
@@ -3019,38 +3289,18 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
             const IRECT rideRect = IRECT::MakeXYWH(585, 193, 210, 75); // подвинь при необходимости
             const IRECT hhRect = IRECT::MakeXYWH(410, 315, 160, 60); // подвинь при необходимости
 
-            pGraphics->AttachControl(new SpritePadButton(kickRect, pressedBmp, kKickNote, "Kick", *this), kCtrlTagKickButton);
-            pGraphics->AttachControl(new SpritePadButton(snareRect, pressedBmp, kSnareNote, "Snare", *this), kCtrlTagSnareButton);
-
-            // >>> ЭТОТ ПЭД ТЕПЕРЬ TOM 3 <<<
-            pGraphics->AttachControl(new SpritePadButton(tomRect, pressedBmp, kTom3Note, "Tom 3", *this), kCtrlTagTomButton);
-
-            pGraphics->AttachControl(new SpritePadButton(crashRect, pressedBmp, kCrashLNote, "Crash L", *this), kCtrlTagCrashLButton);
-            pGraphics->AttachControl(
-                new SpritePadButton(rackTom1Rect, pressedBmp, kTom1Note, "Rack Tom 1", *this),
-                kCtrlTagPadRackTom1Button);
-
-            pGraphics->AttachControl(
-                new SpritePadButton(rackTom2Rect, pressedBmp, kTom2Note, "Rack Tom 2", *this),
-                kCtrlTagPadRackTom2Button);
-
-
-            pGraphics->AttachControl(new SpritePadButton(crashRRect, pressedBmp, kCrashRNote, "Crash R", *this), kCtrlTagCrashRButton);
-            
-            pGraphics->AttachControl(new SpritePadButton(chinaRect, pressedBmp, kChinaNote, "China", *this),
-                kCtrlTagPadChinaButton);
-
-            pGraphics->AttachControl(new SpritePadButton(splashRect, pressedBmp, kSplashNote, "Splash", *this),
-                kCtrlTagPadSplashButton);
-
-            pGraphics->AttachControl(
-                new SpritePadButton(rideRect, pressedBmp, kRideEdgeNote, "Ride", *this),
-                kCtrlTagPadRideButton);
-
-            pGraphics->AttachControl(
-                new SpritePadButton(hhRect, pressedBmp, kHHOpenCloseNote, "Hi-Hat", *this),
-                kCtrlTagPadHHOpenButton
-            );
+            // SpritePadButton принимает const int& → всегда читает актуальную ноту из mNoteMap
+            pGraphics->AttachControl(new SpritePadButton(kickRect,    pressedBmp, mNoteMap.kick,       "Kick",       *this), kCtrlTagKickButton);
+            pGraphics->AttachControl(new SpritePadButton(snareRect,   pressedBmp, mNoteMap.snare,      "Snare",      *this), kCtrlTagSnareButton);
+            pGraphics->AttachControl(new SpritePadButton(tomRect,     pressedBmp, mNoteMap.tom3,       "Tom 3",      *this), kCtrlTagTomButton);
+            pGraphics->AttachControl(new SpritePadButton(crashRect,   pressedBmp, mNoteMap.crashL,     "Crash L",    *this), kCtrlTagCrashLButton);
+            pGraphics->AttachControl(new SpritePadButton(rackTom1Rect,pressedBmp, mNoteMap.tom1,       "Rack Tom 1", *this), kCtrlTagPadRackTom1Button);
+            pGraphics->AttachControl(new SpritePadButton(rackTom2Rect,pressedBmp, mNoteMap.tom2,       "Rack Tom 2", *this), kCtrlTagPadRackTom2Button);
+            pGraphics->AttachControl(new SpritePadButton(crashRRect,  pressedBmp, mNoteMap.crashR,     "Crash R",    *this), kCtrlTagCrashRButton);
+            pGraphics->AttachControl(new SpritePadButton(chinaRect,   pressedBmp, mNoteMap.china,      "China",      *this), kCtrlTagPadChinaButton);
+            pGraphics->AttachControl(new SpritePadButton(splashRect,  pressedBmp, mNoteMap.splash,     "Splash",     *this), kCtrlTagPadSplashButton);
+            pGraphics->AttachControl(new SpritePadButton(rideRect,    pressedBmp, mNoteMap.rideEdge,   "Ride",       *this), kCtrlTagPadRideButton);
+            pGraphics->AttachControl(new SpritePadButton(hhRect,      pressedBmp, mNoteMap.hhOpen,     "Hi-Hat",     *this), kCtrlTagPadHHOpenButton);
 
             // --- МЕНЮ: три кнопки и три оверлея ---
             const IBitmap menuBtnBmp = pGraphics->LoadBitmap(IMG_MENU_BUTTON_BG_FN, 1);
@@ -3641,6 +3891,58 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
             auto* pOverlayL = pGraphics->AttachControl(
                 new MappingOverlayControl(pGraphics->GetBounds(), mappingBmpL, mappingRectL))
                 ->As<MappingOverlayControl>();
+
+            // ===== NOTE SELECTORS на панели маппинга =====
+            // Mapping_BG.png = 608×950 px, scale=0.70 → панель ~426×665 px
+            // Позиции относительно mappingRectL
+            {
+                const float panW = mappingRectL.W();
+                const float panH = mappingRectL.H();
+                const float nsW  = panW * 0.42f;         // ширина одного виджета
+                const float nsH  = 22.f;                 // высота виджета
+                const float gapY = 6.f;                  // вертикальный зазор
+                const float padX = panW * 0.05f;         // отступ от края панели
+                const float col2 = panW * 0.53f;         // начало второй колонки (в px от L панели)
+                const float startY = mappingRectL.T + panH * 0.07f; // отступ сверху
+
+                // Колонка 1 (левая)
+                float y1 = startY;
+                const float x1 = mappingRectL.L + padX;
+                auto ns1 = [&]() -> IRECT { IRECT r = IRECT::MakeXYWH(x1, y1, nsW, nsH); y1 += nsH + gapY; return r; };
+
+                // Колонка 2 (правая)
+                float y2 = startY;
+                const float x2 = mappingRectL.L + col2;
+                auto ns2 = [&]() -> IRECT { IRECT r = IRECT::MakeXYWH(x2, y2, nsW, nsH); y2 += nsH + gapY; return r; };
+
+                auto attachNS = [&](const IRECT& r, const char* label, int note, const char* group, int ctrlTag)
+                {
+                    auto* ctrl = pGraphics->AttachControl(
+                        new NoteSelectorControl(r, label, note, *this, group),
+                        ctrlTag
+                    )->As<NoteSelectorControl>();
+                    pOverlayL->LinkControl(ctrl);
+                    ctrl->Hide(true);
+                };
+
+                // Колонка 1
+                attachNS(ns1(), "Kick",        mNoteMap.kick,       "kick",       kCtrlTagNoteKick);
+                attachNS(ns1(), "Snare",       mNoteMap.snare,      "snare",      kCtrlTagNoteSnare);
+                attachNS(ns1(), "Tom 1",       mNoteMap.tom1,       "tom1",       kCtrlTagNoteTom1);
+                attachNS(ns1(), "Tom 2",       mNoteMap.tom2,       "tom2",       kCtrlTagNoteTom2);
+                attachNS(ns1(), "Tom 3",       mNoteMap.tom3,       "tom3",       kCtrlTagNoteTom3);
+                attachNS(ns1(), "Crash L",     mNoteMap.crashL,     "crashL",     kCtrlTagNoteCrashL);
+                attachNS(ns1(), "Crash R",     mNoteMap.crashR,     "crashR",     kCtrlTagNoteCrashR);
+
+                // Колонка 2
+                attachNS(ns2(), "China",       mNoteMap.china,      "china",      kCtrlTagNoteChina);
+                attachNS(ns2(), "Splash",      mNoteMap.splash,     "splash",     kCtrlTagNoteSplash);
+                attachNS(ns2(), "Ride Edge",   mNoteMap.rideEdge,   "rideEdge",   kCtrlTagNoteRideEdge);
+                attachNS(ns2(), "Ride Center", mNoteMap.rideCenter, "rideCenter", kCtrlTagNoteRideCenter);
+                attachNS(ns2(), "HH Closed",   mNoteMap.hhClosed,   "hhClosed",   kCtrlTagNoteHHClosed);
+                attachNS(ns2(), "HH Choke",    mNoteMap.hhChoke,    "hhChoke",    kCtrlTagNoteHHChoke);
+                attachNS(ns2(), "HH Open",     mNoteMap.hhOpen,     "hhOpen",     kCtrlTagNoteHHOpen);
+            }
 
             // ===== TOM METERS (под foreground) =====
             const float xKick = x;              // 110
@@ -5541,9 +5843,10 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                     };
 
 
+                // hideOne использует HideWithLinked — чтобы скрыть также note selectors
                 auto hideOne = [&](MappingOverlayControl* ov, IControl* btn)
                     {
-                        if (ov && !ov->IsHidden()) { ov->Hide(true); ov->SetDirty(false); }
+                        if (ov && !ov->IsHidden()) { ov->HideWithLinked(true); ov->SetDirty(false); }
                         if (btn) { btn->SetValue(0.0); btn->SetDirty(false); }
                         if (ov == pOverlayC) hideMixer();
                     };
@@ -5567,9 +5870,10 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                     }
                     else
                     {
-                        if (showOv) { showOv->Hide(false); showOv->SetDirty(false); }
+                        // HideWithLinked(false) — показывает оверлей + все linked controls
+                        if (showOv) { showOv->HideWithLinked(false); showOv->SetDirty(false); }
                         if (showBtn) { showBtn->SetValue(1.0); showBtn->SetDirty(false); }
-                        hideMixer(); // как у тебя: сворачивает MIXER и закрывает слайд-окна
+                        hideMixer(); // сворачивает MIXER и закрывает слайд-окна
                     }
 
                 }
@@ -6736,24 +7040,19 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
                         if (HasControlSafe(tag))
                             SendControlMsgFromDelegate(tag, kMsgTagNotePulse, 0, nullptr);
                     };
-                switch (msg.NoteNumber())
-                {
-                case kKickNote:  sendPulse(kCtrlTagKickButton);  break;
-                case kSnareNote: sendPulse(kCtrlTagSnareButton); break;
-                case kCrashLNote:sendPulse(kCtrlTagCrashLButton); break;
-                case kCrashRNote:sendPulse(kCtrlTagCrashRButton); break;
-                case kTom1Note:  sendPulse(kCtrlTagPadRackTom1Button); break;
-                case kTom2Note:  sendPulse(kCtrlTagPadRackTom2Button); break;
-                case kTom3Note:  sendPulse(kCtrlTagTomButton); break;
-                case kChinaNote: sendPulse(kCtrlTagPadChinaButton); break;
-                case kSplashNote:sendPulse(kCtrlTagPadSplashButton); break;
-                case kRideEdgeNote:
-                case kRideCenterNote: sendPulse(kCtrlTagPadRideButton); break;
-                case kHHClosedCloseNote:
-                case kHHChokeCloseNote:
-                case kHHOpenCloseNote: sendPulse(kCtrlTagPadHHOpenButton); break;
-                default: break;
-                }
+                // Динамический lookup по mNoteMap (поддерживает переназначение нот)
+                const int n = msg.NoteNumber();
+                if      (n == mNoteMap.kick)                                    sendPulse(kCtrlTagKickButton);
+                else if (n == mNoteMap.snare)                                   sendPulse(kCtrlTagSnareButton);
+                else if (n == mNoteMap.crashL)                                  sendPulse(kCtrlTagCrashLButton);
+                else if (n == mNoteMap.crashR)                                  sendPulse(kCtrlTagCrashRButton);
+                else if (n == mNoteMap.tom1)                                    sendPulse(kCtrlTagPadRackTom1Button);
+                else if (n == mNoteMap.tom2)                                    sendPulse(kCtrlTagPadRackTom2Button);
+                else if (n == mNoteMap.tom3)                                    sendPulse(kCtrlTagTomButton);
+                else if (n == mNoteMap.china)                                   sendPulse(kCtrlTagPadChinaButton);
+                else if (n == mNoteMap.splash)                                  sendPulse(kCtrlTagPadSplashButton);
+                else if (n == mNoteMap.rideEdge || n == mNoteMap.rideCenter)   sendPulse(kCtrlTagPadRideButton);
+                else if (n == mNoteMap.hhClosed || n == mNoteMap.hhChoke || n == mNoteMap.hhOpen) sendPulse(kCtrlTagPadHHOpenButton);
             }
 #endif
         }

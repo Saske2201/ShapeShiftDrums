@@ -250,6 +250,21 @@ kTagSndBrowse = 6106,
 		kCtrlTagTransientKnob = 5044,
 		kCtrlTagSustainKnob = 5045,
 
+		// === NOTE SELECTOR CONTROLS (Mapping panel) ===
+		kCtrlTagNoteKick       = 7000,
+		kCtrlTagNoteSnare      = 7001,
+		kCtrlTagNoteTom1       = 7002,
+		kCtrlTagNoteTom2       = 7003,
+		kCtrlTagNoteTom3       = 7004,
+		kCtrlTagNoteCrashL     = 7005,
+		kCtrlTagNoteCrashR     = 7006,
+		kCtrlTagNoteChina      = 7007,
+		kCtrlTagNoteSplash     = 7008,
+		kCtrlTagNoteRideEdge   = 7009,
+		kCtrlTagNoteRideCenter = 7010,
+		kCtrlTagNoteHHClosed   = 7011,
+		kCtrlTagNoteHHChoke    = 7012,
+		kCtrlTagNoteHHOpen     = 7013,
 };
 
 enum EMsgTags
@@ -262,6 +277,28 @@ enum EMsgTags
 
 using namespace iplug;
 using namespace igraphics;
+
+//======================================================================
+// MIDI NOTE MAP — конфигурируемое назначение нот для каждого семпла
+//======================================================================
+struct DrumNoteMap
+{
+	// Дефолты совпадают с текущими константами kXxxNote в TemplateProject.cpp
+	int kick       = 36;  // C2  — Kick
+	int snare      = 38;  // D2  — Snare
+	int tom1       = 50;  // D3  — Rack Tom 1
+	int tom2       = 48;  // C3  — Rack Tom 2
+	int tom3       = 43;  // G2  — Floor Tom
+	int crashL     = 57;  // A4  — Crash L
+	int crashR     = 49;  // C#3 — Crash R
+	int china      = 52;  // E3  — China
+	int splash     = 56;  // G#3 — Splash
+	int rideEdge   = 51;  // D#3 — Ride Edge
+	int rideCenter = 53;  // F3  — Ride Center
+	int hhClosed   = 42;  // F#2 — HH Closed
+	int hhChoke    = 44;  // G#2 — HH Choke
+	int hhOpen     = 46;  // A#2 — HH Open
+};
 
 class TemplateProject final : public Plugin
 {
@@ -282,6 +319,14 @@ public:
 #endif
 
 	void OnParamChange(int paramIdx) override;
+
+	// === Note Map public API ===
+	// Изменить ноту для конкретного семпла (group = "kick","snare","tom1",...,"hhOpen")
+	void SetSampleNote(const char* group, int midiNote);
+	// Получить текущую ноту для семпла
+	int  GetSampleNote(const char* group) const;
+	// Применить весь mNoteMap к DrumKit (вызывать после UnserializeState или смены звуков)
+	void ApplyNoteMap();
 
 #if IPLUG_DSP
 	void OnReset() override;
@@ -400,4 +445,7 @@ private:
 	// NEW — мастер-гейн, читается на аудиопотоке
 	std::atomic<float> mMasterGain{ 1.f };
 	void* mKitOpaque = nullptr; // DrumKit* per-instance (type is in TemplateProject.cpp)
+
+	// Конфигурируемый маппинг MIDI-нот (UI thread / serialization)
+	DrumNoteMap mNoteMap;
 };
