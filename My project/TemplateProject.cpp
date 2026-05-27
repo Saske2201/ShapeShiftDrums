@@ -1037,21 +1037,106 @@ static const DrumNoteMap kBuiltinPresets[4] = {
 };
 static const char* kPresetNames[4] = { "DEFAULT", "EZDRUMMER", "GGD", "ADDICTIVE" };
 
-static std::string GetCustomPresetPath_()
+static std::string GetCustomPresetsFilePath_()
 {
 #ifdef OS_WIN
     const char* appdata = getenv("APPDATA");
     if (!appdata) return {};
-    return std::string(appdata) + "\\AquamarineRecords\\ShapeShiftDrums\\custom_mapping.txt";
+    return std::string(appdata) + "\\AquamarineRecords\\ShapeShiftDrums\\custom_presets.txt";
 #elif defined(OS_MAC)
     const char* home = getenv("HOME");
     if (!home) return {};
-    return std::string(home) + "/Library/Application Support/TemplateProject/custom_mapping.txt";
+    return std::string(home) + "/Library/Application Support/TemplateProject/custom_presets.txt";
 #else
     const char* home = getenv("HOME");
     if (!home) return {};
-    return std::string(home) + "/.config/TemplateProject/custom_mapping.txt";
+    return std::string(home) + "/.config/TemplateProject/custom_presets.txt";
 #endif
+}
+
+static void WriteNoteMapToStream_(std::ofstream& ofs, const DrumNoteMap& nm)
+{
+    ofs << "kick="       << nm.kick       << "\n";
+    ofs << "snare="      << nm.snare      << "\n";
+    ofs << "tom1="       << nm.tom1       << "\n";
+    ofs << "tom2="       << nm.tom2       << "\n";
+    ofs << "tom3="       << nm.tom3       << "\n";
+    ofs << "crashL="     << nm.crashL     << "\n";
+    ofs << "crashR="     << nm.crashR     << "\n";
+    ofs << "china="      << nm.china      << "\n";
+    ofs << "splash="     << nm.splash     << "\n";
+    ofs << "rideEdge="   << nm.rideEdge   << "\n";
+    ofs << "rideCenter=" << nm.rideCenter << "\n";
+    ofs << "hhClosed="   << nm.hhClosed   << "\n";
+    ofs << "hhChoke="    << nm.hhChoke    << "\n";
+    ofs << "hhOpen="     << nm.hhOpen     << "\n";
+}
+
+static void SaveAllCustomPresets_(const std::vector<CustomPreset>& presets)
+{
+    const std::string path = GetCustomPresetsFilePath_();
+    if (path.empty()) return;
+    try { std::filesystem::create_directories(std::filesystem::path(path).parent_path()); } catch (...) {}
+    std::ofstream ofs(path);
+    if (!ofs) return;
+    for (const auto& cp : presets)
+    {
+        ofs << "[preset]\n";
+        ofs << "name=" << cp.name << "\n";
+        WriteNoteMapToStream_(ofs, cp.noteMap);
+        ofs << "\n";
+    }
+}
+
+static void LoadAllCustomPresets_(std::vector<CustomPreset>& presets)
+{
+    presets.clear();
+    const std::string path = GetCustomPresetsFilePath_();
+    if (path.empty()) return;
+    std::ifstream ifs(path);
+    if (!ifs) return;
+    std::string line;
+    CustomPreset current;
+    bool inPreset = false;
+    while (std::getline(ifs, line))
+    {
+        if (line == "[preset]")
+        {
+            if (inPreset && !current.name.empty())
+                presets.push_back(current);
+            current = CustomPreset();
+            inPreset = true;
+            continue;
+        }
+        if (!inPreset || line.empty() || line[0] == '#') continue;
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        while (!val.empty() && std::isspace((unsigned char)val.back())) val.pop_back();
+        if (key == "name") { current.name = val; continue; }
+        try {
+            const int note = std::clamp(std::stoi(val), 0, 127);
+            int* field = nullptr;
+            if      (key == "kick")       field = &current.noteMap.kick;
+            else if (key == "snare")      field = &current.noteMap.snare;
+            else if (key == "tom1")       field = &current.noteMap.tom1;
+            else if (key == "tom2")       field = &current.noteMap.tom2;
+            else if (key == "tom3")       field = &current.noteMap.tom3;
+            else if (key == "crashL")     field = &current.noteMap.crashL;
+            else if (key == "crashR")     field = &current.noteMap.crashR;
+            else if (key == "china")      field = &current.noteMap.china;
+            else if (key == "splash")     field = &current.noteMap.splash;
+            else if (key == "rideEdge")   field = &current.noteMap.rideEdge;
+            else if (key == "rideCenter") field = &current.noteMap.rideCenter;
+            else if (key == "hhClosed")   field = &current.noteMap.hhClosed;
+            else if (key == "hhChoke")    field = &current.noteMap.hhChoke;
+            else if (key == "hhOpen")     field = &current.noteMap.hhOpen;
+            if (field) *field = note;
+        } catch (...) {}
+    }
+    if (inPreset && !current.name.empty())
+        presets.push_back(current);
 }
 
 void TemplateProject::ApplyPreset(int idx)
@@ -1062,46 +1147,63 @@ void TemplateProject::ApplyPreset(int idx)
         mCurrentPreset = idx;
         ApplyNoteMap();
     }
-    else if (idx == 5 && mHasCustomPreset)
-    {
-        mNoteMap = mCustomPreset;
-        mCurrentPreset = 5;
-        ApplyNoteMap();
-    }
+}
+
+void TemplateProject::ApplyCustomPreset(int customIdx)
+{
+    if (customIdx < 0 || customIdx >= (int)mCustomPresets.size()) return;
+    mNoteMap = mCustomPresets[customIdx].noteMap;
+    mCurrentCustomIdx = customIdx;
+    mCurrentPreset = 100;
+    ApplyNoteMap();
+}
+
+std::string TemplateProject::GetCustomPresetName(int idx) const
+{
+    if (idx < 0 || idx >= (int)mCustomPresets.size()) return {};
+    return mCustomPresets[idx].name;
 }
 
 void TemplateProject::SaveCustomPreset(const char* name)
 {
-    const std::string presetName = (name && *name) ? name : "My Custom";
-    mCustomPreset     = mNoteMap;
-    mCustomPresetName = presetName;
-    mHasCustomPreset  = true;
-    mCurrentPreset    = 5;
+    CustomPreset cp;
+    cp.name    = (name && *name) ? name : "My Custom";
+    cp.noteMap = mNoteMap;
+    mCustomPresets.push_back(cp);
+    mCurrentCustomIdx = (int)mCustomPresets.size() - 1;
+    mCurrentPreset    = 100;
+    SaveAllCustomPresets_(mCustomPresets);
+}
 
-    // Также сохраняем в файл (для бэкапа / импорта в следующей сессии)
-    const std::string path = GetCustomPresetPath_();
-    if (path.empty()) return;
-    try {
-        std::filesystem::create_directories(
-            std::filesystem::path(path).parent_path());
-    } catch (...) {}
-    std::ofstream ofs(path);
-    if (!ofs) return;
-    ofs << "# preset_name=" << presetName << "\n";
-    ofs << "kick="       << mNoteMap.kick       << "\n";
-    ofs << "snare="      << mNoteMap.snare      << "\n";
-    ofs << "tom1="       << mNoteMap.tom1       << "\n";
-    ofs << "tom2="       << mNoteMap.tom2       << "\n";
-    ofs << "tom3="       << mNoteMap.tom3       << "\n";
-    ofs << "crashL="     << mNoteMap.crashL     << "\n";
-    ofs << "crashR="     << mNoteMap.crashR     << "\n";
-    ofs << "china="      << mNoteMap.china      << "\n";
-    ofs << "splash="     << mNoteMap.splash     << "\n";
-    ofs << "rideEdge="   << mNoteMap.rideEdge   << "\n";
-    ofs << "rideCenter=" << mNoteMap.rideCenter << "\n";
-    ofs << "hhClosed="   << mNoteMap.hhClosed   << "\n";
-    ofs << "hhChoke="    << mNoteMap.hhChoke    << "\n";
-    ofs << "hhOpen="     << mNoteMap.hhOpen     << "\n";
+void TemplateProject::RenameCustomPreset(int idx, const char* name)
+{
+    if (idx < 0 || idx >= (int)mCustomPresets.size()) return;
+    mCustomPresets[idx].name = (name && *name) ? name : "My Custom";
+    SaveAllCustomPresets_(mCustomPresets);
+}
+
+void TemplateProject::DeleteCustomPreset(int idx)
+{
+    if (idx < 0 || idx >= (int)mCustomPresets.size()) return;
+    mCustomPresets.erase(mCustomPresets.begin() + idx);
+    if (mCurrentCustomIdx == idx)
+    {
+        if (mCustomPresets.empty())
+        {
+            mCurrentCustomIdx = -1;
+            mCurrentPreset    = -1;
+        }
+        else
+        {
+            mCurrentCustomIdx = std::min(idx, (int)mCustomPresets.size() - 1);
+            // mCurrentPreset stays 100; content changed
+        }
+    }
+    else if (mCurrentCustomIdx > idx)
+    {
+        mCurrentCustomIdx--;
+    }
+    SaveAllCustomPresets_(mCustomPresets);
 }
 
 void TemplateProject::ImportNoteMap(const char* path)
@@ -1198,28 +1300,31 @@ bool TemplateProject::SerializeState(IByteChunk& chunk) const
     chunk.PutBytes(&mNoteMap.hhOpen,     (int)sizeof(int));
     chunk.PutBytes(&mCurrentPreset,      (int)sizeof(int));
 
-    // === CUSTOM PRESET (новые поля, backward-compat) ===
-    const int hasCustom = mHasCustomPreset ? 1 : 0;
-    chunk.PutBytes(&hasCustom, (int)sizeof(int));
-    if (mHasCustomPreset)
+    // === CUSTOM PRESETS (v2 format) ===
+    const int customVersion = 2;
+    chunk.PutBytes(&customVersion, (int)sizeof(int));
+    const int customCount = (int)mCustomPresets.size();
+    chunk.PutBytes(&customCount, (int)sizeof(int));
+    for (const auto& cp : mCustomPresets)
     {
-        WDL_String cn(mCustomPresetName.c_str());
+        WDL_String cn(cp.name.c_str());
         chunk.PutStr(cn.Get());
-        chunk.PutBytes(&mCustomPreset.kick,       (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.snare,      (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.tom1,       (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.tom2,       (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.tom3,       (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.crashL,     (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.crashR,     (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.china,      (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.splash,     (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.rideEdge,   (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.rideCenter, (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.hhClosed,   (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.hhChoke,    (int)sizeof(int));
-        chunk.PutBytes(&mCustomPreset.hhOpen,     (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.kick,       (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.snare,      (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.tom1,       (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.tom2,       (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.tom3,       (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.crashL,     (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.crashR,     (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.china,      (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.splash,     (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.rideEdge,   (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.rideCenter, (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.hhClosed,   (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.hhChoke,    (int)sizeof(int));
+        chunk.PutBytes(&cp.noteMap.hhOpen,     (int)sizeof(int));
     }
+    chunk.PutBytes(&mCurrentCustomIdx, (int)sizeof(int));
 
     return true;
 }
@@ -1264,40 +1369,53 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
     // mCurrentPreset (добавлено позже, старые пресеты не имеют этого поля)
     { int tmp = mCurrentPreset; int np = chunk.GetBytes(&tmp, sizeof(int), pos); if (np > 0) { mCurrentPreset = tmp; pos = np; } }
 
-    // === CUSTOM PRESET (новые поля, backward-compat) ===
+    // === CUSTOM PRESETS (backward-compat: 0=none, 1=old single, 2=new multi) ===
     {
-        int hasCustom = 0;
-        int np = chunk.GetBytes(&hasCustom, sizeof(int), pos);
+        int marker = 0;
+        int np = chunk.GetBytes(&marker, sizeof(int), pos);
         if (np > 0)
         {
             pos = np;
-            if (hasCustom)
-            {
-                mHasCustomPreset = true;
-                WDL_String cn;
-                int sp = chunk.GetStr(cn, pos);
-                if (sp > 0) { pos = sp; mCustomPresetName = cn.Get(); }
-
-                auto readCN = [&](int& field) {
-                    int tmp = field;
-                    int rp = chunk.GetBytes(&tmp, sizeof(int), pos);
-                    if (rp > 0) { field = std::clamp(tmp, 0, 127); pos = rp; }
+            auto readNoteMap = [&](DrumNoteMap& nm) {
+                auto rn = [&](int& f) {
+                    int tmp = f; int rp = chunk.GetBytes(&tmp, sizeof(int), pos);
+                    if (rp > 0) { f = std::clamp(tmp, 0, 127); pos = rp; }
                 };
-                readCN(mCustomPreset.kick);
-                readCN(mCustomPreset.snare);
-                readCN(mCustomPreset.tom1);
-                readCN(mCustomPreset.tom2);
-                readCN(mCustomPreset.tom3);
-                readCN(mCustomPreset.crashL);
-                readCN(mCustomPreset.crashR);
-                readCN(mCustomPreset.china);
-                readCN(mCustomPreset.splash);
-                readCN(mCustomPreset.rideEdge);
-                readCN(mCustomPreset.rideCenter);
-                readCN(mCustomPreset.hhClosed);
-                readCN(mCustomPreset.hhChoke);
-                readCN(mCustomPreset.hhOpen);
+                rn(nm.kick); rn(nm.snare); rn(nm.tom1); rn(nm.tom2); rn(nm.tom3);
+                rn(nm.crashL); rn(nm.crashR); rn(nm.china); rn(nm.splash);
+                rn(nm.rideEdge); rn(nm.rideCenter); rn(nm.hhClosed); rn(nm.hhChoke); rn(nm.hhOpen);
+            };
+            if (marker == 2)
+            {
+                // New v2 format
+                int customCount = 0;
+                int nc = chunk.GetBytes(&customCount, sizeof(int), pos);
+                if (nc > 0) pos = nc;
+                mCustomPresets.clear();
+                for (int i = 0; i < customCount; i++)
+                {
+                    CustomPreset cp;
+                    WDL_String cn; int sp = chunk.GetStr(cn, pos);
+                    if (sp > 0) { pos = sp; cp.name = cn.Get(); }
+                    readNoteMap(cp.noteMap);
+                    mCustomPresets.push_back(cp);
+                }
+                int ci = -1; int rci = chunk.GetBytes(&ci, sizeof(int), pos);
+                if (rci > 0) { pos = rci; mCurrentCustomIdx = ci; }
             }
+            else if (marker == 1)
+            {
+                // Old single-preset format (backward compat)
+                CustomPreset cp;
+                WDL_String cn; int sp = chunk.GetStr(cn, pos);
+                if (sp > 0) { pos = sp; cp.name = cn.Get(); }
+                readNoteMap(cp.noteMap);
+                mCustomPresets.clear();
+                mCustomPresets.push_back(cp);
+                mCurrentCustomIdx = 0;
+                if (mCurrentPreset == 5) mCurrentPreset = 100;
+            }
+            // marker == 0: no custom presets
         }
     }
 
@@ -2618,6 +2736,7 @@ private:
 
 //======================================================================
 // NoteMapPresetButton — дропдаун пресетов маппинга
+// LMB = select preset; RMB = manage custom presets (rename/delete)
 //======================================================================
 class NoteMapPresetButton final : public IControl
 {
@@ -2627,8 +2746,6 @@ public:
 
     void Draw(IGraphics& g) override
     {
-        // Всегда синхронизируем локальный лейбл с состоянием плагина
-        // (работает даже если SetDirty после OnPopupMenuSelection не сработал)
         SyncLabel();
 
         const IColor bg = mWantNameEntry
@@ -2651,18 +2768,20 @@ public:
     void OnMouseOut()  override { mIsOver = false; mIsDown = false; SetDirty(false); }
     void OnMouseUp(float, float, const IMouseMod&) override   { mIsDown = false; SetDirty(false); }
 
-    void OnMouseDown(float, float, const IMouseMod&) override
+    void OnMouseDown(float x, float y, const IMouseMod& mod) override
     {
         mIsDown = true;
 
+        // Two-step name entry: waiting for click to open text field
         if (mWantNameEntry)
         {
-            // Шаг 2: пользователь кликнул — открываем текстовый ввод
-            // (CreateTextEntry надёжно работает только из OnMouseDown, не из popup-коллбека)
             mWantNameEntry = false;
             mAwaitingName  = true;
-            const std::string defName = mPlug.HasCustomPreset()
-                ? mPlug.GetCustomPresetName() : "My Custom";
+            std::string defName;
+            if (mRenameIdx >= 0)
+                defName = mPlug.GetCustomPresetName(mRenameIdx);
+            else
+                defName = "My Custom";
             SetDirty(false);
             if (GetUI())
                 GetUI()->CreateTextEntry(*this,
@@ -2674,19 +2793,54 @@ public:
         SetDirty(false);
         if (!GetUI()) return;
 
-        IPopupMenu menu;
-        menu.AddItem(new IPopupMenu::Item("DEFAULT",   IPopupMenu::Item::kNoFlags, 0));
-        menu.AddItem(new IPopupMenu::Item("EZDRUMMER", IPopupMenu::Item::kNoFlags, 1));
-        menu.AddItem(new IPopupMenu::Item("GGD",       IPopupMenu::Item::kNoFlags, 2));
-        menu.AddItem(new IPopupMenu::Item("ADDICTIVE", IPopupMenu::Item::kNoFlags, 3));
+        // RMB: management popup for custom presets
+        if (mod.R)
+        {
+            if (!mPlug.HasCustomPresets()) return;
+            IPopupMenu menu;
+            menu.AddItem(new IPopupMenu::Item("Custom Presets", IPopupMenu::Item::kTitle, -1));
+            menu.AddSeparator();
+            const int n = mPlug.GetCustomPresetCount();
+            for (int i = 0; i < n; i++)
+            {
+                const std::string nm = mPlug.GetCustomPresetName(i);
+                const std::string rLabel = "Rename: " + nm;
+                const std::string dLabel = "Delete: " + nm;
+                menu.AddItem(new IPopupMenu::Item(rLabel.c_str(), IPopupMenu::Item::kNoFlags, 2000 + i));
+                menu.AddItem(new IPopupMenu::Item(dLabel.c_str(), IPopupMenu::Item::kNoFlags, 3000 + i));
+                if (i < n - 1) menu.AddSeparator();
+            }
+            GetUI()->CreatePopupMenu(*this, menu, mRECT);
+            return;
+        }
 
-        if (mPlug.HasCustomPreset())
+        // LMB: selection popup
+        IPopupMenu menu;
+        const int curPreset = mPlug.GetCurrentPreset();
+        const int curCustom = mPlug.GetCurrentCustomIdx();
+
+        auto addBuiltin = [&](const char* nm, int tag) {
+            auto flags = (curPreset == tag) ? IPopupMenu::Item::kChecked : IPopupMenu::Item::kNoFlags;
+            menu.AddItem(new IPopupMenu::Item(nm, flags, tag));
+        };
+        addBuiltin("DEFAULT",   0);
+        addBuiltin("EZDRUMMER", 1);
+        addBuiltin("GGD",       2);
+        addBuiltin("ADDICTIVE", 3);
+
+        if (mPlug.HasCustomPresets())
         {
             menu.AddSeparator();
-            menu.AddItem(new IPopupMenu::Item(mPlug.GetCustomPresetName().c_str(), IPopupMenu::Item::kNoFlags, 5));
+            const int n = mPlug.GetCustomPresetCount();
+            for (int i = 0; i < n; i++)
+            {
+                const bool active = (curPreset == 100 && curCustom == i);
+                auto flags = active ? IPopupMenu::Item::kChecked : IPopupMenu::Item::kNoFlags;
+                menu.AddItem(new IPopupMenu::Item(mPlug.GetCustomPresetName(i).c_str(), flags, 1000 + i));
+            }
         }
         menu.AddSeparator();
-        menu.AddItem(new IPopupMenu::Item("Save as Custom...", IPopupMenu::Item::kNoFlags, 6));
+        menu.AddItem(new IPopupMenu::Item("Save as Custom...", IPopupMenu::Item::kNoFlags, 999));
 
         GetUI()->CreatePopupMenu(*this, menu, mRECT);
     }
@@ -2702,25 +2856,41 @@ public:
         if (tag >= 0 && tag <= 3)
         {
             mPlug.ApplyPreset(tag);
-            mPresetLabel = kPresetNames[tag]; // обновляем лейбл явно, не через SetDirty
+            mPresetLabel = kPresetNames[tag];
             RefreshAll();
         }
-        else if (tag == 5 && mPlug.HasCustomPreset())
+        else if (tag >= 1000 && tag < 2000)
         {
-            mPlug.ApplyPreset(5);
-            mPresetLabel = mPlug.GetCustomPresetName();
+            const int idx = tag - 1000;
+            mPlug.ApplyCustomPreset(idx);
+            mPresetLabel = mPlug.GetCustomPresetName(idx);
             if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
             RefreshAll();
         }
-        else if (tag == 6)
+        else if (tag == 999)
         {
-            // Шаг 1: сохраняем с текущим/дефолтным именем, переходим в режим ожидания клика
-            const char* tempName = mPlug.HasCustomPreset()
-                ? mPlug.GetCustomPresetName().c_str() : "My Custom";
-            mPlug.SaveCustomPreset(tempName);
-            mPresetLabel = mPlug.GetCustomPresetName();
+            // Save current note map as a new custom preset (name via text entry)
+            mRenameIdx = -1; // -1 = save-as (new)
+            mPlug.SaveCustomPreset("My Custom"); // temporary name, user will rename
+            const int newIdx = mPlug.GetCustomPresetCount() - 1;
+            mPresetLabel = mPlug.GetCustomPresetName(newIdx);
             if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
-            mWantNameEntry = true; // следующий клик откроет поле ввода имени
+            mRenameIdx     = newIdx; // rename the just-created entry
+            mWantNameEntry = true;
+        }
+        else if (tag >= 2000 && tag < 3000)
+        {
+            // Rename
+            mRenameIdx     = tag - 2000;
+            mWantNameEntry = true;
+        }
+        else if (tag >= 3000 && tag < 4000)
+        {
+            // Delete
+            const int idx = tag - 3000;
+            mPlug.DeleteCustomPreset(idx);
+            SyncLabel();
+            RefreshAll();
         }
 
         SetDirty(false);
@@ -2731,28 +2901,40 @@ public:
         mAwaitingName = false;
         if (txt && *txt)
         {
-            mPlug.SaveCustomPreset(txt);
-            mPresetLabel = txt;
-            if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
+            if (mRenameIdx >= 0)
+                mPlug.RenameCustomPreset(mRenameIdx, txt);
+            mRenameIdx = -1;
+            SyncLabel();
             RefreshAll();
+        }
+        else
+        {
+            mRenameIdx = -1;
         }
         SetDirty(false);
     }
 
 private:
-    // Синхронизировать mPresetLabel с текущим состоянием плагина
     void SyncLabel()
     {
-        if (mWantNameEntry || mAwaitingName) return; // не перебивать во время ввода имени
+        if (mWantNameEntry || mAwaitingName) return;
         const int p = mPlug.GetCurrentPreset();
         if (p >= 0 && p < 4)
         {
             mPresetLabel = kPresetNames[p];
         }
-        else if (p == 5 && mPlug.HasCustomPreset())
+        else if (p == 100)
         {
-            mPresetLabel = mPlug.GetCustomPresetName();
-            if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
+            const int ci = mPlug.GetCurrentCustomIdx();
+            if (ci >= 0 && ci < mPlug.GetCustomPresetCount())
+            {
+                mPresetLabel = mPlug.GetCustomPresetName(ci);
+                if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
+            }
+            else
+            {
+                mPresetLabel = "CUSTOM";
+            }
         }
         else
         {
@@ -2765,17 +2947,17 @@ private:
         if (!GetUI()) return;
         for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
             if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
-        // Дёргаем оверлей тоже — некоторые бэкенды кэшируют регион оверлея
         if (auto* ov = GetUI()->GetControlWithTag(kCtrlTagMappingOverlay))
             ov->SetDirty(false);
     }
 
     TemplateProject& mPlug;
-    std::string mPresetLabel   = "DEFAULT";
+    std::string mPresetLabel = "DEFAULT";
     bool mIsOver        = false;
     bool mIsDown        = false;
-    bool mWantNameEntry = false; // ждём клика для ввода имени
-    bool mAwaitingName  = false; // text entry открыт
+    bool mWantNameEntry = false;
+    bool mAwaitingName  = false;
+    int  mRenameIdx     = -1; // -1=save-as, >=0=rename existing
 };
 
 //======================================================================
@@ -6761,6 +6943,9 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
 
 
 #endif // IPLUG_EDITOR
+
+    // Загружаем сохранённые кастомные пресеты из файла
+    LoadAllCustomPresets_(mCustomPresets);
 
     // Применяем дефолт параметров к DSP/движку при создании инстанса:
     OnParamChange(kParamKick);

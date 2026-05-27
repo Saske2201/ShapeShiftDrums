@@ -2,6 +2,7 @@
 
 #include "IPlug_include_in_plug_hdr.h"
 #include <atomic>
+#include <string>
 #include <vector>
 #include <cmath>
 #include <filesystem>
@@ -305,6 +306,11 @@ struct DrumNoteMap
 	int hhOpen     = 46;  // A#2 — HH Open
 };
 
+struct CustomPreset {
+	std::string name;
+	DrumNoteMap noteMap;
+};
+
 class TemplateProject final : public Plugin
 {
 public:
@@ -320,7 +326,7 @@ public:
 	bool OnHostRequestingSupportedViewConfiguration(int width, int height) override { return true; }
 	void OnUIOpen() override;
 	void OnUIClose() override;
-	
+
 #endif
 
 	void OnParamChange(int paramIdx) override;
@@ -330,13 +336,18 @@ public:
 	int  GetSampleNote(const char* group) const;
 	void ApplyNoteMap();
 	// Preset system
-	void ApplyPreset(int idx);              // 0=DEFAULT 1=EZD 2=GGD 3=ADD 5=namedCustom
-	void SaveCustomPreset(const char* name);// сохранить с именем
+	void ApplyPreset(int idx);                     // 0-3 = builtin
+	void ApplyCustomPreset(int customIdx);         // apply custom preset by index
+	void SaveCustomPreset(const char* name);       // creates new custom preset
+	void RenameCustomPreset(int idx, const char* name);
+	void DeleteCustomPreset(int idx);
 	void ImportNoteMap(const char* path);
 	void ExportNoteMap(const char* path);
 	int  GetCurrentPreset() const { return mCurrentPreset; }
-	std::string GetCustomPresetName() const { return mCustomPresetName; }
-	bool HasCustomPreset() const { return mHasCustomPreset; }
+	int  GetCurrentCustomIdx() const { return mCurrentCustomIdx; }
+	int  GetCustomPresetCount() const { return (int)mCustomPresets.size(); }
+	std::string GetCustomPresetName(int idx) const;
+	bool HasCustomPresets() const { return !mCustomPresets.empty(); }
 
 #if IPLUG_DSP
 	void OnReset() override;
@@ -458,8 +469,7 @@ private:
 
 	// Конфигурируемый маппинг MIDI-нот (UI thread / serialization)
 	DrumNoteMap mNoteMap;
-	int         mCurrentPreset    = 0;     // -1=unsaved, 0-3=builtin, 5=named custom
-	DrumNoteMap mCustomPreset;             // user-saved named preset (in-memory)
-	std::string mCustomPresetName;         // name for the saved custom preset
-	bool        mHasCustomPreset  = false; // true once user has saved a custom preset
+	int         mCurrentPreset   = 0;   // -1=unsaved, 0-3=builtin, 100=custom
+	std::vector<CustomPreset> mCustomPresets;
+	int         mCurrentCustomIdx = -1; // index into mCustomPresets when mCurrentPreset==100
 };
