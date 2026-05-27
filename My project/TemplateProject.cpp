@@ -995,8 +995,8 @@ void TemplateProject::SetSampleNote(const char* group, int midiNote)
     // Обновляем DrumKit (thread-safe через atomic)
     if (auto* kit = static_cast<DrumKit*>(mKitOpaque))
         kit->SetNoteForGroup(group, midiNote);
-    // SpritePadButton не нужно обновлять отдельно:
-    // он хранит const int& на поле mNoteMap и автоматически читает новое значение.
+    // При ручном изменении — сбрасываем пресет в «custom»
+    mCurrentPreset = -1;
 }
 
 // Получить текущую ноту семпла
@@ -1018,6 +1018,138 @@ int TemplateProject::GetSampleNote(const char* group) const
     else if (!strcmp(group, "hhChoke"))    return mNoteMap.hhChoke;
     else if (!strcmp(group, "hhOpen"))     return mNoteMap.hhOpen;
     return -1;
+}
+
+// ======================================================================
+// PRESET SYSTEM
+// ======================================================================
+
+// Built-in note-map presets (order matches mCurrentPreset 0..3)
+static const DrumNoteMap kBuiltinPresets[4] = {
+    // 0 — DEFAULT (текущие дефолты плагина, General MIDI)
+    { 36, 38, 50, 48, 43, 57, 49, 52, 56, 51, 53, 42, 44, 46 },
+    // 1 — EZDRUMMER (EZDrummer 2/3 standard MIDI mapping)
+    { 36, 38, 48, 45, 43, 57, 49, 52, 55, 51, 53, 42, 44, 46 },
+    // 2 — GGD (GetGood Drums OKW-style)
+    { 36, 40, 50, 47, 41, 57, 49, 52, 55, 51, 53, 42, 44, 46 },
+    // 3 — ADDICTIVE (Addictive Drums 2)
+    { 36, 38, 50, 48, 43, 49, 57, 52, 55, 51, 53, 42, 44, 46 },
+};
+static const char* kPresetNames[5] = { "DEFAULT", "EZDRUMMER", "GGD", "ADDICTIVE", "CUSTOM 1" };
+
+static std::string GetCustomPresetPath_()
+{
+#ifdef OS_WIN
+    const char* appdata = getenv("APPDATA");
+    if (!appdata) return {};
+    return std::string(appdata) + "\\AquamarineRecords\\ShapeShiftDrums\\custom_mapping.txt";
+#elif defined(OS_MAC)
+    const char* home = getenv("HOME");
+    if (!home) return {};
+    return std::string(home) + "/Library/Application Support/TemplateProject/custom_mapping.txt";
+#else
+    const char* home = getenv("HOME");
+    if (!home) return {};
+    return std::string(home) + "/.config/TemplateProject/custom_mapping.txt";
+#endif
+}
+
+void TemplateProject::ApplyPreset(int idx)
+{
+    if (idx >= 0 && idx < 4)
+    {
+        mNoteMap = kBuiltinPresets[idx];
+        mCurrentPreset = idx;
+        ApplyNoteMap();
+    }
+    else if (idx == 4)
+    {
+        const std::string path = GetCustomPresetPath_();
+        if (!path.empty() && FileExists_(path.c_str()))
+        {
+            ImportNoteMap(path.c_str());
+        }
+        mCurrentPreset = 4;
+    }
+}
+
+void TemplateProject::SaveCustomPreset()
+{
+    const std::string path = GetCustomPresetPath_();
+    if (path.empty()) return;
+    try {
+        std::filesystem::create_directories(
+            std::filesystem::path(path).parent_path());
+    } catch (...) {}
+    ExportNoteMap(path.c_str());
+    mCurrentPreset = 4;
+}
+
+void TemplateProject::ImportNoteMap(const char* path)
+{
+    if (!path || !*path) return;
+    std::ifstream ifs(path);
+    if (!ifs) return;
+
+    std::string line;
+    while (std::getline(ifs, line))
+    {
+        if (line.empty() || line[0] == '#') continue;
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        // trim
+        while (!key.empty() && std::isspace((unsigned char)key.back()))  key.pop_back();
+        while (!val.empty() && std::isspace((unsigned char)val.front())) val.erase(0, 1);
+        while (!val.empty() && std::isspace((unsigned char)val.back()))  val.pop_back();
+
+        try {
+            const int note = std::clamp(std::stoi(val), 0, 127);
+            // Обновляем поле напрямую (без сброса mCurrentPreset)
+            int* field = nullptr;
+            if      (key == "kick")       field = &mNoteMap.kick;
+            else if (key == "snare")      field = &mNoteMap.snare;
+            else if (key == "tom1")       field = &mNoteMap.tom1;
+            else if (key == "tom2")       field = &mNoteMap.tom2;
+            else if (key == "tom3")       field = &mNoteMap.tom3;
+            else if (key == "crashL")     field = &mNoteMap.crashL;
+            else if (key == "crashR")     field = &mNoteMap.crashR;
+            else if (key == "china")      field = &mNoteMap.china;
+            else if (key == "splash")     field = &mNoteMap.splash;
+            else if (key == "rideEdge")   field = &mNoteMap.rideEdge;
+            else if (key == "rideCenter") field = &mNoteMap.rideCenter;
+            else if (key == "hhClosed")   field = &mNoteMap.hhClosed;
+            else if (key == "hhChoke")    field = &mNoteMap.hhChoke;
+            else if (key == "hhOpen")     field = &mNoteMap.hhOpen;
+            if (field) *field = note;
+        }
+        catch (...) {}
+    }
+    ApplyNoteMap(); // синхронизируем DrumKit
+}
+
+void TemplateProject::ExportNoteMap(const char* path)
+{
+    if (!path || !*path) return;
+    std::ofstream ofs(path);
+    if (!ofs) return;
+    ofs << "# ShapeShiftDrums Drum Mapping\n";
+    ofs << "kick="       << mNoteMap.kick       << "\n";
+    ofs << "snare="      << mNoteMap.snare      << "\n";
+    ofs << "tom1="       << mNoteMap.tom1       << "\n";
+    ofs << "tom2="       << mNoteMap.tom2       << "\n";
+    ofs << "tom3="       << mNoteMap.tom3       << "\n";
+    ofs << "crashL="     << mNoteMap.crashL     << "\n";
+    ofs << "crashR="     << mNoteMap.crashR     << "\n";
+    ofs << "china="      << mNoteMap.china      << "\n";
+    ofs << "splash="     << mNoteMap.splash     << "\n";
+    ofs << "rideEdge="   << mNoteMap.rideEdge   << "\n";
+    ofs << "rideCenter=" << mNoteMap.rideCenter << "\n";
+    ofs << "hhClosed="   << mNoteMap.hhClosed   << "\n";
+    ofs << "hhChoke="    << mNoteMap.hhChoke    << "\n";
+    ofs << "hhOpen="     << mNoteMap.hhOpen     << "\n";
 }
 
 // === SerializeState ===
@@ -1045,6 +1177,7 @@ bool TemplateProject::SerializeState(IByteChunk& chunk) const
     chunk.PutBytes(&mNoteMap.hhClosed,   (int)sizeof(int));
     chunk.PutBytes(&mNoteMap.hhChoke,    (int)sizeof(int));
     chunk.PutBytes(&mNoteMap.hhOpen,     (int)sizeof(int));
+    chunk.PutBytes(&mCurrentPreset,      (int)sizeof(int));
 
     return true;
 }
@@ -1085,6 +1218,9 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
     readNote(mNoteMap.hhClosed);
     readNote(mNoteMap.hhChoke);
     readNote(mNoteMap.hhOpen);
+
+    // mCurrentPreset (добавлено позже, старые пресеты не имеют этого поля)
+    { int tmp = mCurrentPreset; int np = chunk.GetBytes(&tmp, sizeof(int), pos); if (np > 0) { mCurrentPreset = tmp; pos = np; } }
 
     // проверяем и пытаемся загрузить (LoadSndlib применит mNoteMap)
     mSndLibReady.store(false, std::memory_order_release);
@@ -2208,7 +2344,7 @@ private:
 };
 
 //======================================================================
-// NoteSelectorControl — интерактивный виджет для смены MIDI-ноты семпла
+// NoteSelectorControl — интерактивный виджет: drag ЛКМ меняет ноту, клик → ввод
 //======================================================================
 class NoteSelectorControl final : public IControl
 {
@@ -2222,102 +2358,170 @@ public:
         , mGroup(group ? group : "")
     {}
 
+    // ------------------------------------------------------------------ Draw
     void Draw(IGraphics& g) override
     {
-        // Всегда читаем актуальное значение (синхронно с mNoteMap)
-        const int currentNote = mPlug.GetSampleNote(mGroup.c_str());
-        if (currentNote >= 0) mNote = currentNote; // обновляем кэш
+        // Читаем актуальное значение каждый кадр
+        const int cur = mPlug.GetSampleNote(mGroup.c_str());
+        if (cur >= 0) mNote = cur;
 
-        // Фон
-        const IColor bgNormal(200, 25, 25, 30);
-        const IColor bgHover (200, 40, 40, 50);
-        const IColor border  (180, 80, 80, 90);
-        g.FillRoundRect(mIsOver ? bgHover : bgNormal, mRECT, 3.f);
-        g.DrawRoundRect(border, mRECT, 3.f);
+        // Тонкий разделитель снизу строки
+        g.DrawLine(IColor(45, 255, 255, 255),
+                   mRECT.L + 6.f, mRECT.B - 1.f,
+                   mRECT.R - 6.f, mRECT.B - 1.f);
 
-        // Текст метки (левая часть)
-        IText lblTxt(11.f, IColor(255,200,200,200), nullptr, EAlign::Near, EVAlign::Middle);
-        IRECT lblR = mRECT.GetPadded(-4.f);
-        lblR.R = lblR.L + lblR.W() * 0.48f;
-        g.DrawText(lblTxt, mLabel.c_str(), lblR);
+        // Hover-подсветка строки
+        if (mIsOver)
+            g.FillRect(IColor(20, 255, 255, 255), mRECT);
 
-        // Текст ноты (правая часть, выделена цветом)
-        IText noteTxt(11.f, IColor(255,255,210,80), nullptr, EAlign::Near, EVAlign::Middle);
-        IRECT noteR = mRECT.GetPadded(-4.f);
-        noteR.L = noteR.L + noteR.W() * 0.50f;
-        g.DrawText(noteTxt, NoteToStr(mNote).c_str(), noteR);
-    }
-
-    void OnMouseOver(float, float, const IMouseMod&) override { mIsOver = true;  SetDirty(false); }
-    void OnMouseOut() override                               { mIsOver = false; SetDirty(false); }
-
-    void OnMouseDown(float x, float y, const IMouseMod& mod) override
-    {
-        if (mod.R)
+        // Название инструмента (левые 62%)
+        const float noteX = mRECT.L + mRECT.W() * 0.62f;
         {
-            // ПКМ — сброс на дефолт
-            const int def = mPlug.GetSampleNote(mGroup.c_str());
-            // def уже хранится в mNoteMap, мы просто не меняем его —
-            // текущее значение и есть "дефолт" до смены. Для сброса
-            // можно перейти на временно хранимый дефолт:
-            return;
+            IRECT lr = mRECT.GetPadded(-3.f);
+            lr.R = noteX - 4.f;
+            IText t(13.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
+            g.DrawText(t, mLabel.c_str(), lr);
         }
 
-        // ЛКМ — открыть текстовый ввод
-        if (GetUI())
+        // Блок ноты (правые 38%)
+        const IRECT noteBox(noteX + 2.f, mRECT.T + 3.f, mRECT.R - 4.f, mRECT.B - 3.f);
+        const IColor noteBg = mNoteHover
+            ? IColor(210, 75, 100, 130)
+            : IColor(170, 45, 60,  85);
+        g.FillRoundRect(noteBg, noteBox, 3.f);
+        g.DrawRoundRect(IColor(130, 130, 155, 185), noteBox, 3.f);
+
+        // Текст ноты: "C2"
+        IText nt(13.f, IColor(255, 255, 215, 80), nullptr, EAlign::Center, EVAlign::Middle);
+        g.DrawText(nt, NoteToStr(mNote).c_str(), noteBox);
+
+        // Стрелки < > при наведении (подсказка что можно тянуть)
+        if (mNoteHover && !mDragging)
         {
+            IText at(9.f, IColor(160, 255, 215, 80), nullptr, EAlign::Near, EVAlign::Middle);
+            IRECT al = noteBox; al.R = al.L + 13.f;
+            IRECT ar = noteBox; ar.L = ar.R - 13.f;
+            g.DrawText(at, "<", al);
+            IText at2(9.f, IColor(160, 255, 215, 80), nullptr, EAlign::Far, EVAlign::Middle);
+            g.DrawText(at2, ">", ar);
+        }
+    }
+
+    // --------------------------------------------------------------- Mouse
+    void OnMouseOver(float x, float, const IMouseMod&) override
+    {
+        mIsOver = true;
+        const bool nh = IsNoteArea(x);
+        if (nh != mNoteHover) { mNoteHover = nh; }
+        SetDirty(false);
+    }
+    void OnMouseMove(float x, float, const IMouseMod&) override
+    {
+        const bool nh = IsNoteArea(x);
+        if (nh != mNoteHover) { mNoteHover = nh; SetDirty(false); }
+    }
+    void OnMouseOut() override
+    {
+        mIsOver = false; mNoteHover = false; mDragging = false;
+        SetDirty(false);
+    }
+
+    void OnMouseDown(float x, float, const IMouseMod& mod) override
+    {
+        mDragStartX    = x;
+        mDragStartNote = mNote;
+        mDragged       = false;
+        mDragging      = false;
+    }
+
+    void OnMouseDrag(float x, float, float, float, const IMouseMod&) override
+    {
+        const float dx = x - mDragStartX;
+        if (std::abs(dx) > 2.f) { mDragged = true; mDragging = true; }
+
+        constexpr float kPxPerSemitone = 4.f;
+        const int delta   = (int)(dx / kPxPerSemitone);
+        const int newNote = std::clamp(mDragStartNote + delta, 0, 127);
+        if (newNote != mNote)
+        {
+            mNote = newNote;
+            mPlug.SetSampleNote(mGroup.c_str(), newNote);
+            // Сбрасываем пресет-кнопку чтобы показала "custom"
+            if (GetUI())
+                if (auto* pb = GetUI()->GetControlWithTag(kCtrlTagMappingPresetBtn))
+                    pb->SetDirty(false);
+            SetDirty(false);
+        }
+    }
+
+    void OnMouseUp(float x, float, const IMouseMod&) override
+    {
+        mDragging = false;
+
+        // Если не было drag и клик попал в зону ноты → открыть ввод
+        if (!mDragged && IsNoteArea(x) && GetUI())
+        {
+            const float noteX = mRECT.L + mRECT.W() * 0.62f;
+            const IRECT entryR(noteX + 2.f, mRECT.T + 2.f, mRECT.R - 4.f, mRECT.B - 2.f);
             mEditStr = std::to_string(mNote);
-            GetUI()->CreateTextEntry(*this, IText(12.f, COLOR_WHITE), mRECT, mEditStr.c_str());
+            GetUI()->CreateTextEntry(*this, IText(12.f, COLOR_WHITE), entryR, mEditStr.c_str());
         }
     }
 
     void OnTextEntryCompletion(const char* txt, int) override
     {
-        if (!txt || !*txt) return;
+        if (!txt || !*txt) { SetDirty(false); return; }
         const int n = ParseMidiNote(txt);
-        if (n < 0) { SetDirty(false); return; } // невалидное значение — игнорируем
-
-        mNote = n;
-        mPlug.SetSampleNote(mGroup.c_str(), mNote);
+        if (n >= 0)
+        {
+            mNote = n;
+            mPlug.SetSampleNote(mGroup.c_str(), n);
+            if (GetUI())
+                if (auto* pb = GetUI()->GetControlWithTag(kCtrlTagMappingPresetBtn))
+                    pb->SetDirty(false);
+        }
         SetDirty(false);
     }
 
-    // Синхронизировать отображение с текущим значением в плагине
     void SyncNote() { mNote = mPlug.GetSampleNote(mGroup.c_str()); SetDirty(false); }
 
 private:
-    std::string mLabel;
-    int         mNote;
-    TemplateProject& mPlug;
-    std::string mGroup;
-    std::string mEditStr;
-    bool        mIsOver = false;
+    bool IsNoteArea(float x) const { return x >= mRECT.L + mRECT.W() * 0.58f; }
 
-    // MIDI 0-127 → "C2 (36)"
+    std::string      mLabel;
+    int              mNote;
+    TemplateProject& mPlug;
+    std::string      mGroup;
+    std::string      mEditStr;
+    bool             mIsOver      = false;
+    bool             mNoteHover   = false;
+    bool             mDragged     = false;
+    bool             mDragging    = false;
+    float            mDragStartX  = 0.f;
+    int              mDragStartNote = 0;
+
+    // MIDI note → "C2" (без числа)
     static std::string NoteToStr(int note)
     {
-        static const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-        const int octave = (note / 12) - 1;
-        char buf[24];
-        snprintf(buf, sizeof(buf), "%s%d (%d)", names[note % 12], octave, note);
+        if (note < 0 || note > 127) return "--";
+        static const char* names[] =
+            {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+        const int octave = note / 12 - 1;
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%s%d", names[note % 12], octave);
         return buf;
     }
 
-    // Разбирает строку вида "36", "C2", "D#3", "Bb2" → MIDI номер, или -1
+    // "36", "C2", "D#3", "Bb2" → MIDI или -1
     static int ParseMidiNote(const char* str)
     {
         if (!str || !*str) return -1;
-
-        // Попытка 1: просто целое число
         char* end = nullptr;
         const long num = strtol(str, &end, 10);
-        // допускаем пробелы после числа
         while (*end == ' ') ++end;
         if (*end == '\0') return (num >= 0 && num <= 127) ? (int)num : -1;
 
-        // Попытка 2: нотное имя [A-Gb][b#][-][-2..9]
         const char* p = str;
-        // Буква ноты
         static const char* noteNames[] = {"C","D","E","F","G","A","B"};
         static const int   noteSemis[] = { 0,  2,  4,  5,  7,  9, 11};
         int semi = -1;
@@ -2325,19 +2529,172 @@ private:
             if (toupper((unsigned char)*p) == noteNames[i][0]) { semi = noteSemis[i]; break; }
         if (semi < 0) return -1;
         ++p;
-        // Диез/бемоль
         if (*p == '#' || *p == 's' || *p == 'S') { semi += 1; ++p; }
-        else if (*p == 'b' || *p == 'B') { semi -= 1; ++p; }
-        // Октава (может быть отрицательной, например C-2)
+        else if (*p == 'b' || *p == 'B')          { semi -= 1; ++p; }
         while (*p == ' ') ++p;
         if (*p == '\0') return -1;
         char* oEnd = nullptr;
         const long oct = strtol(p, &oEnd, 10);
         while (*oEnd == ' ') ++oEnd;
         if (*oEnd != '\0') return -1;
-        const int midiNote = (int)((oct + 1) * 12 + ((semi % 12 + 12) % 12));
-        return (midiNote >= 0 && midiNote <= 127) ? midiNote : -1;
+        const int midi = (int)((oct + 1) * 12 + ((semi % 12 + 12) % 12));
+        return (midi >= 0 && midi <= 127) ? midi : -1;
     }
+};
+
+//======================================================================
+// NoteMapPresetButton — дропдаун пресетов маппинга
+//======================================================================
+class NoteMapPresetButton final : public IControl
+{
+public:
+    NoteMapPresetButton(const IRECT& r, TemplateProject& plug)
+        : IControl(r), mPlug(plug) {}
+
+    void Draw(IGraphics& g) override
+    {
+        const IColor bg = mIsDown
+            ? IColor(255, 75, 95, 120)
+            : (mIsOver ? IColor(240, 60, 78, 100) : IColor(210, 45, 60, 80));
+        g.FillRoundRect(bg, mRECT, 4.f);
+        g.DrawRoundRect(IColor(180, 140, 160, 190), mRECT, 4.f);
+
+        const int p = mPlug.GetCurrentPreset();
+        const char* name = (p >= 0 && p <= 4) ? kPresetNames[p] : "CUSTOM";
+        std::string txt = std::string(name) + " v";
+        IText t(11.f, IColor(255, 235, 235, 235), nullptr, EAlign::Center, EVAlign::Middle);
+        g.DrawText(t, txt.c_str(), mRECT);
+    }
+
+    void OnMouseOver(float, float, const IMouseMod&) override { mIsOver = true;  SetDirty(false); }
+    void OnMouseOut() override { mIsOver = false; mIsDown = false; SetDirty(false); }
+    void OnMouseDown(float, float, const IMouseMod&) override
+    {
+        mIsDown = true; SetDirty(false);
+
+        IPopupMenu menu;
+        menu.AddItem("DEFAULT",    0);
+        menu.AddItem("EZDRUMMER",  1);
+        menu.AddItem("GGD",        2);
+        menu.AddItem("ADDICTIVE",  3);
+        menu.AddSeparator();
+        menu.AddItem("CUSTOM 1",   4);
+        menu.AddSeparator();
+        menu.AddItem("Save as Custom", 5);
+
+        GetUI()->CreatePopupMenu(*this, menu, mRECT);
+    }
+    void OnMouseUp(float, float, const IMouseMod&) override { mIsDown = false; SetDirty(false); }
+
+    void OnPopupMenuSelection(IPopupMenu* pMenu, int) override
+    {
+        mIsDown = false; SetDirty(false);
+        if (!pMenu) return;
+        auto* item = pMenu->GetChosenItem();
+        if (!item) return;
+        const int tag = item->GetTag();
+
+        if (tag >= 0 && tag <= 4)
+        {
+            mPlug.ApplyPreset(tag);
+        }
+        else if (tag == 5)
+        {
+            mPlug.SaveCustomPreset();
+        }
+
+        // Обновляем все note-селекторы
+        if (GetUI())
+            for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
+                if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
+        SetDirty(false);
+    }
+
+private:
+    TemplateProject& mPlug;
+    bool mIsOver = false, mIsDown = false;
+};
+
+//======================================================================
+// NoteMapImportButton / NoteMapExportButton
+//======================================================================
+class NoteMapImportButton final : public IControl
+{
+public:
+    NoteMapImportButton(const IRECT& r, TemplateProject& plug)
+        : IControl(r), mPlug(plug) {}
+
+    void Draw(IGraphics& g) override
+    {
+        const IColor bg = mIsDown
+            ? IColor(255, 75, 100, 120)
+            : (mIsOver ? IColor(240, 60, 80, 100) : IColor(210, 45, 60, 80));
+        g.FillRoundRect(bg, mRECT, 4.f);
+        g.DrawRoundRect(IColor(180, 140, 160, 190), mRECT, 4.f);
+        IText t(11.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle);
+        g.DrawText(t, "IMPORT", mRECT);
+    }
+
+    void OnMouseOver(float, float, const IMouseMod&) override { mIsOver = true;  SetDirty(false); }
+    void OnMouseOut() override { mIsOver = false; mIsDown = false; SetDirty(false); }
+    void OnMouseDown(float, float, const IMouseMod&) override { mIsDown = true;  SetDirty(false); }
+    void OnMouseUp(float x, float y, const IMouseMod&) override
+    {
+        mIsDown = false; SetDirty(false);
+        if (!mRECT.Contains(x, y) || !GetUI()) return;
+
+        WDL_String path;
+        GetUI()->PromptForFile(path, EFileAction::Open, WDL_String(""), "txt");
+        if (path.GetLength() > 0)
+        {
+            mPlug.ImportNoteMap(path.Get());
+            mPlug.mCurrentPreset = -1;
+            for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
+                if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
+            if (auto* c = GetUI()->GetControlWithTag(kCtrlTagMappingPresetBtn))
+                c->SetDirty(false);
+        }
+    }
+
+private:
+    TemplateProject& mPlug;
+    bool mIsOver = false, mIsDown = false;
+};
+
+class NoteMapExportButton final : public IControl
+{
+public:
+    NoteMapExportButton(const IRECT& r, TemplateProject& plug)
+        : IControl(r), mPlug(plug) {}
+
+    void Draw(IGraphics& g) override
+    {
+        const IColor bg = mIsDown
+            ? IColor(255, 75, 100, 120)
+            : (mIsOver ? IColor(240, 60, 80, 100) : IColor(210, 45, 60, 80));
+        g.FillRoundRect(bg, mRECT, 4.f);
+        g.DrawRoundRect(IColor(180, 140, 160, 190), mRECT, 4.f);
+        IText t(11.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle);
+        g.DrawText(t, "EXPORT", mRECT);
+    }
+
+    void OnMouseOver(float, float, const IMouseMod&) override { mIsOver = true;  SetDirty(false); }
+    void OnMouseOut() override { mIsOver = false; mIsDown = false; SetDirty(false); }
+    void OnMouseDown(float, float, const IMouseMod&) override { mIsDown = true;  SetDirty(false); }
+    void OnMouseUp(float x, float y, const IMouseMod&) override
+    {
+        mIsDown = false; SetDirty(false);
+        if (!mRECT.Contains(x, y) || !GetUI()) return;
+
+        WDL_String path;
+        GetUI()->PromptForFile(path, EFileAction::Save, WDL_String(""), "txt");
+        if (path.GetLength() > 0)
+            mPlug.ExportNoteMap(path.Get());
+    }
+
+private:
+    TemplateProject& mPlug;
+    bool mIsOver = false, mIsDown = false;
 };
 
 static inline IRECT MakeSpriteRectFromCenter(const IBitmap& bmp, float scale, float cx, float cy)
@@ -3891,56 +4248,100 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 new MappingOverlayControl(pGraphics->GetBounds(), mappingBmpL, mappingRectL))
                 ->As<MappingOverlayControl>();
 
-            // ===== NOTE SELECTORS на панели маппинга =====
-            // Mapping_BG.png = 608×950 px, scale=0.70 → панель ~426×665 px
-            // Позиции относительно mappingRectL
+            // ===== MAPPING PANEL LAYOUT =====
+            // Mapping_BG.png 608×950 @ scale=0.70 → ~426×665 px
             {
-                const float panW = mappingRectL.W();
-                const float panH = mappingRectL.H();
-                const float nsW  = panW * 0.42f;         // ширина одного виджета
-                const float nsH  = 22.f;                 // высота виджета
-                const float gapY = 6.f;                  // вертикальный зазор
-                const float padX = panW * 0.05f;         // отступ от края панели
-                const float col2 = panW * 0.53f;         // начало второй колонки (в px от L панели)
-                const float startY = mappingRectL.T + panH * 0.07f; // отступ сверху
+                const float panW  = mappingRectL.W();
+                const float padX  = 12.f;
+                const float padY  = 14.f;
+                const float rowW  = panW - 2.f * padX;
 
-                // Колонка 1 (левая)
-                float y1 = startY;
-                const float x1 = mappingRectL.L + padX;
-                auto ns1 = [&]() -> IRECT { IRECT r = IRECT::MakeXYWH(x1, y1, nsW, nsH); y1 += nsH + gapY; return r; };
+                // ---- Header (3 строки: PRESET / IMPORT / EXPORT) ----
+                const float hdrH  = 28.f;   // высота строки хедера
+                const float hdrG  = 7.f;    // зазор между строками хедера
+                const float lblW  = rowW * 0.56f;
+                const float btnW  = rowW - lblW;
 
-                // Колонка 2 (правая)
-                float y2 = startY;
-                const float x2 = mappingRectL.L + col2;
-                auto ns2 = [&]() -> IRECT { IRECT r = IRECT::MakeXYWH(x2, y2, nsW, nsH); y2 += nsH + gapY; return r; };
+                float hy = mappingRectL.T + padY;
+                const float hx = mappingRectL.L + padX;
 
-                auto attachNS = [&](const IRECT& r, const char* label, int note, const char* group, int ctrlTag)
+                auto nextHdr = [&]() -> float { float y = hy; hy += hdrH + hdrG; return y; };
+
+                // Хелпер: добавить текстовый лейбл к оверлею (без ctrlTag)
+                auto addHdrLabel = [&](const IRECT& r, const char* txt)
                 {
+                    IText lTxt(11.f, IColor(255,225,225,225), nullptr, EAlign::Near, EVAlign::Middle);
+                    auto* c = pGraphics->AttachControl(new ITextControl(r, txt, lTxt));
+                    pOverlayL->LinkControl(c); c->Hide(true);
+                };
+                // Хелпер: добавить кнопку к оверлею
+                auto addHdrBtn = [&](IControl* btn, int ctrlTag)
+                {
+                    auto* c = pGraphics->AttachControl(btn, ctrlTag);
+                    pOverlayL->LinkControl(c); c->Hide(true);
+                };
+
+                // Row 1: MAPPING PRESET
+                {
+                    float y = nextHdr();
+                    addHdrLabel(IRECT::MakeXYWH(hx,         y, lblW, hdrH), "MAPPING PRESET:");
+                    addHdrBtn(new NoteMapPresetButton(
+                        IRECT::MakeXYWH(hx + lblW, y, btnW, hdrH), *this),
+                        kCtrlTagMappingPresetBtn);
+                }
+                // Row 2: LOAD MAPPING
+                {
+                    float y = nextHdr();
+                    addHdrLabel(IRECT::MakeXYWH(hx,         y, lblW, hdrH), "LOAD MAPPING:");
+                    addHdrBtn(new NoteMapImportButton(
+                        IRECT::MakeXYWH(hx + lblW, y, btnW, hdrH), *this),
+                        kCtrlTagMappingImportBtn);
+                }
+                // Row 3: SAVE MAPPING
+                {
+                    float y = nextHdr();
+                    addHdrLabel(IRECT::MakeXYWH(hx,         y, lblW, hdrH), "SAVE MAPPING:");
+                    addHdrBtn(new NoteMapExportButton(
+                        IRECT::MakeXYWH(hx + lblW, y, btnW, hdrH), *this),
+                        kCtrlTagMappingExportBtn);
+                }
+
+                hy += 8.f; // доп. зазор перед списком
+
+                // ---- Список инструментов (1 колонка, 14 строк) ----
+                const float listH = 34.f;   // высота строки
+                const float listG = 1.f;    // зазор
+
+                struct InstrEntry { const char* label; const char* group; int* notePtr; int ctrlTag; };
+                const InstrEntry entries[] = {
+                    { "Kick",        "kick",       &mNoteMap.kick,       kCtrlTagNoteKick       },
+                    { "Snare",       "snare",      &mNoteMap.snare,      kCtrlTagNoteSnare      },
+                    { "Tom 1",       "tom1",       &mNoteMap.tom1,       kCtrlTagNoteTom1       },
+                    { "Tom 2",       "tom2",       &mNoteMap.tom2,       kCtrlTagNoteTom2       },
+                    { "Tom 3",       "tom3",       &mNoteMap.tom3,       kCtrlTagNoteTom3       },
+                    { "Crash L",     "crashL",     &mNoteMap.crashL,     kCtrlTagNoteCrashL     },
+                    { "Crash R",     "crashR",     &mNoteMap.crashR,     kCtrlTagNoteCrashR     },
+                    { "China",       "china",      &mNoteMap.china,      kCtrlTagNoteChina      },
+                    { "Splash",      "splash",     &mNoteMap.splash,     kCtrlTagNoteSplash     },
+                    { "Ride Edge",   "rideEdge",   &mNoteMap.rideEdge,   kCtrlTagNoteRideEdge   },
+                    { "Ride Center", "rideCenter", &mNoteMap.rideCenter, kCtrlTagNoteRideCenter },
+                    { "HH Closed",   "hhClosed",   &mNoteMap.hhClosed,   kCtrlTagNoteHHClosed   },
+                    { "HH Choke",    "hhChoke",    &mNoteMap.hhChoke,    kCtrlTagNoteHHChoke    },
+                    { "HH Open",     "hhOpen",     &mNoteMap.hhOpen,     kCtrlTagNoteHHOpen     },
+                };
+
+                for (const auto& e : entries)
+                {
+                    const IRECT rowR = IRECT::MakeXYWH(hx, hy, rowW, listH);
+                    hy += listH + listG;
+
                     auto* ctrl = pGraphics->AttachControl(
-                        new NoteSelectorControl(r, label, note, *this, group),
-                        ctrlTag
+                        new NoteSelectorControl(rowR, e.label, *e.notePtr, *this, e.group),
+                        e.ctrlTag
                     )->As<NoteSelectorControl>();
                     pOverlayL->LinkControl(ctrl);
                     ctrl->Hide(true);
-                };
-
-                // Колонка 1
-                attachNS(ns1(), "Kick",        mNoteMap.kick,       "kick",       kCtrlTagNoteKick);
-                attachNS(ns1(), "Snare",       mNoteMap.snare,      "snare",      kCtrlTagNoteSnare);
-                attachNS(ns1(), "Tom 1",       mNoteMap.tom1,       "tom1",       kCtrlTagNoteTom1);
-                attachNS(ns1(), "Tom 2",       mNoteMap.tom2,       "tom2",       kCtrlTagNoteTom2);
-                attachNS(ns1(), "Tom 3",       mNoteMap.tom3,       "tom3",       kCtrlTagNoteTom3);
-                attachNS(ns1(), "Crash L",     mNoteMap.crashL,     "crashL",     kCtrlTagNoteCrashL);
-                attachNS(ns1(), "Crash R",     mNoteMap.crashR,     "crashR",     kCtrlTagNoteCrashR);
-
-                // Колонка 2
-                attachNS(ns2(), "China",       mNoteMap.china,      "china",      kCtrlTagNoteChina);
-                attachNS(ns2(), "Splash",      mNoteMap.splash,     "splash",     kCtrlTagNoteSplash);
-                attachNS(ns2(), "Ride Edge",   mNoteMap.rideEdge,   "rideEdge",   kCtrlTagNoteRideEdge);
-                attachNS(ns2(), "Ride Center", mNoteMap.rideCenter, "rideCenter", kCtrlTagNoteRideCenter);
-                attachNS(ns2(), "HH Closed",   mNoteMap.hhClosed,   "hhClosed",   kCtrlTagNoteHHClosed);
-                attachNS(ns2(), "HH Choke",    mNoteMap.hhChoke,    "hhChoke",    kCtrlTagNoteHHChoke);
-                attachNS(ns2(), "HH Open",     mNoteMap.hhOpen,     "hhOpen",     kCtrlTagNoteHHOpen);
+                }
             }
 
             // ===== TOM METERS (под foreground) =====

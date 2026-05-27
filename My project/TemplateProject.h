@@ -265,6 +265,11 @@ kTagSndBrowse = 6106,
 		kCtrlTagNoteHHClosed   = 7011,
 		kCtrlTagNoteHHChoke    = 7012,
 		kCtrlTagNoteHHOpen     = 7013,
+
+		// === MAPPING PANEL HEADER CONTROLS ===
+		kCtrlTagMappingPresetBtn = 7100,
+		kCtrlTagMappingImportBtn = 7101,
+		kCtrlTagMappingExportBtn = 7102,
 };
 
 enum EMsgTags
@@ -321,12 +326,15 @@ public:
 	void OnParamChange(int paramIdx) override;
 
 	// === Note Map public API ===
-	// Изменить ноту для конкретного семпла (group = "kick","snare","tom1",...,"hhOpen")
 	void SetSampleNote(const char* group, int midiNote);
-	// Получить текущую ноту для семпла
 	int  GetSampleNote(const char* group) const;
-	// Применить весь mNoteMap к DrumKit (вызывать после UnserializeState или смены звуков)
 	void ApplyNoteMap();
+	// Preset system
+	void ApplyPreset(int idx);          // 0=DEFAULT 1=EZDRUMMER 2=GGD 3=ADDICTIVE 4=CUSTOM
+	void SaveCustomPreset();            // сохранить как CUSTOM 1
+	void ImportNoteMap(const char* path);
+	void ExportNoteMap(const char* path);
+	int  GetCurrentPreset() const { return mCurrentPreset; }
 
 #if IPLUG_DSP
 	void OnReset() override;
@@ -448,4 +456,5 @@ private:
 
 	// Конфигурируемый маппинг MIDI-нот (UI thread / serialization)
 	DrumNoteMap mNoteMap;
+	int mCurrentPreset = 0; // -1=custom, 0=DEFAULT, 1=EZD, 2=GGD, 3=ADD, 4=CUSTOM1
 };
