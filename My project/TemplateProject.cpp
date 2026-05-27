@@ -274,6 +274,15 @@ public:
 
 private:
 
+    // ---- данные цвета/порогов (объявлены первыми, чтобы mem-initializer их видел) ----
+    float  mWarnDB = -12.f, mHotDB = -6.f;
+    IColor mCold, mWarn, mHot;
+    EDirection mDir = EDirection::Vertical;
+    float  mMinDB = -60.f;
+    float  mMaxDB = 12.f;
+    float  mPeakAmp[2] = { 0.f, 0.f };
+    bool   mHavePeak = false;
+
     // ---- peak-hold state (на канал) ----
     std::chrono::steady_clock::time_point mLastT = std::chrono::steady_clock::now();
     float mCapDB[2]{ -60.f, -60.f };     // позиция «шапки» в dB
@@ -341,17 +350,6 @@ private:
         }
     }
 
-private:
-    float  mWarnDB = -12.f, mHotDB = -6.f;
-    IColor mCold, mWarn, mHot;
-    EDirection mDir = EDirection::Vertical;
-
-    // важно: совпадать с делениями базы
-    float mMinDB = -60.f;
-    float mMaxDB = 12.f;
-
-    float mPeakAmp[2] = { 0.f, 0.f }; // линейные пики (из DSP)
-    bool  mHavePeak = false;
 };
 
 
@@ -2234,7 +2232,7 @@ public:
         const IColor bgNormal(200, 25, 25, 30);
         const IColor bgHover (200, 40, 40, 50);
         const IColor border  (180, 80, 80, 90);
-        g.FillRoundRect(IsMouseOver() ? bgHover : bgNormal, mRECT, 3.f);
+        g.FillRoundRect(mIsOver ? bgHover : bgNormal, mRECT, 3.f);
         g.DrawRoundRect(border, mRECT, 3.f);
 
         // Текст метки (левая часть)
@@ -2250,8 +2248,8 @@ public:
         g.DrawText(noteTxt, NoteToStr(mNote).c_str(), noteR);
     }
 
-    void OnMouseOver(float, float, const IMouseMod&) override { SetDirty(false); }
-    void OnMouseOut() override { SetDirty(false); }
+    void OnMouseOver(float, float, const IMouseMod&) override { mIsOver = true;  SetDirty(false); }
+    void OnMouseOut() override                               { mIsOver = false; SetDirty(false); }
 
     void OnMouseDown(float x, float y, const IMouseMod& mod) override
     {
@@ -2293,6 +2291,7 @@ private:
     TemplateProject& mPlug;
     std::string mGroup;
     std::string mEditStr;
+    bool        mIsOver = false;
 
     // MIDI 0-127 → "C2 (36)"
     static std::string NoteToStr(int note)
