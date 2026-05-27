@@ -2675,18 +2675,18 @@ public:
         if (!GetUI()) return;
 
         IPopupMenu menu;
-        menu.AddItem("DEFAULT",   0);
-        menu.AddItem("EZDRUMMER", 1);
-        menu.AddItem("GGD",       2);
-        menu.AddItem("ADDICTIVE", 3);
+        menu.AddItem(new IPopupMenu::Item("DEFAULT",   IPopupMenu::Item::kNoFlags, 0));
+        menu.AddItem(new IPopupMenu::Item("EZDRUMMER", IPopupMenu::Item::kNoFlags, 1));
+        menu.AddItem(new IPopupMenu::Item("GGD",       IPopupMenu::Item::kNoFlags, 2));
+        menu.AddItem(new IPopupMenu::Item("ADDICTIVE", IPopupMenu::Item::kNoFlags, 3));
 
         if (mPlug.HasCustomPreset())
         {
             menu.AddSeparator();
-            menu.AddItem(mPlug.GetCustomPresetName().c_str(), 5);
+            menu.AddItem(new IPopupMenu::Item(mPlug.GetCustomPresetName().c_str(), IPopupMenu::Item::kNoFlags, 5));
         }
         menu.AddSeparator();
-        menu.AddItem("Save as Custom...", 6);
+        menu.AddItem(new IPopupMenu::Item("Save as Custom...", IPopupMenu::Item::kNoFlags, 6));
 
         GetUI()->CreatePopupMenu(*this, menu, mRECT);
     }
