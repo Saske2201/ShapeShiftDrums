@@ -1107,7 +1107,6 @@ void TemplateProject::ImportNoteMap(const char* path)
 
         try {
             const int note = std::clamp(std::stoi(val), 0, 127);
-            // Обновляем поле напрямую (без сброса mCurrentPreset)
             int* field = nullptr;
             if      (key == "kick")       field = &mNoteMap.kick;
             else if (key == "snare")      field = &mNoteMap.snare;
@@ -1128,6 +1127,7 @@ void TemplateProject::ImportNoteMap(const char* path)
         catch (...) {}
     }
     ApplyNoteMap(); // синхронизируем DrumKit
+    mCurrentPreset = -1; // помечаем как custom после импорта
 }
 
 void TemplateProject::ExportNoteMap(const char* path)
@@ -2415,11 +2415,6 @@ public:
         if (nh != mNoteHover) { mNoteHover = nh; }
         SetDirty(false);
     }
-    void OnMouseMove(float x, float, const IMouseMod&) override
-    {
-        const bool nh = IsNoteArea(x);
-        if (nh != mNoteHover) { mNoteHover = nh; SetDirty(false); }
-    }
     void OnMouseOut() override
     {
         mIsOver = false; mNoteHover = false; mDragging = false;
@@ -2643,17 +2638,22 @@ public:
         mIsDown = false; SetDirty(false);
         if (!mRECT.Contains(x, y) || !GetUI()) return;
 
-        WDL_String path;
-        GetUI()->PromptForFile(path, EFileAction::Open, WDL_String(""), "txt");
-        if (path.GetLength() > 0)
-        {
-            mPlug.ImportNoteMap(path.Get());
-            mPlug.mCurrentPreset = -1;
-            for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
-                if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
-            if (auto* c = GetUI()->GetControlWithTag(kCtrlTagMappingPresetBtn))
-                c->SetDirty(false);
-        }
+        WDL_String fileName, dir;
+        GetUI()->PromptForFile(fileName, dir, EFileAction::Open, "txt",
+            [this](const WDL_String& pickedFile, const WDL_String&)
+            {
+                if (pickedFile.GetLength() > 0)
+                {
+                    mPlug.ImportNoteMap(pickedFile.Get()); // sets mCurrentPreset=-1 internally
+                    if (GetUI())
+                    {
+                        for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
+                            if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
+                        if (auto* c = GetUI()->GetControlWithTag(kCtrlTagMappingPresetBtn))
+                            c->SetDirty(false);
+                    }
+                }
+            });
     }
 
 private:
@@ -2686,10 +2686,13 @@ public:
         mIsDown = false; SetDirty(false);
         if (!mRECT.Contains(x, y) || !GetUI()) return;
 
-        WDL_String path;
-        GetUI()->PromptForFile(path, EFileAction::Save, WDL_String(""), "txt");
-        if (path.GetLength() > 0)
-            mPlug.ExportNoteMap(path.Get());
+        WDL_String fileName, dir;
+        GetUI()->PromptForFile(fileName, dir, EFileAction::Save, "txt",
+            [this](const WDL_String& pickedFile, const WDL_String&)
+            {
+                if (pickedFile.GetLength() > 0)
+                    mPlug.ExportNoteMap(pickedFile.Get());
+            });
     }
 
 private:
