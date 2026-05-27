@@ -330,7 +330,7 @@ public:
 	int  GetSampleNote(const char* group) const;
 	void ApplyNoteMap();
 	// Preset system
-	void ApplyPreset(int idx);              // 0=DEFAULT 1=EZD 2=GGD 3=ADD 4=SHAPESHIFTDRUMS 5=namedCustom
+	void ApplyPreset(int idx);              // 0=DEFAULT 1=EZD 2=GGD 3=ADD 5=namedCustom
 	void SaveCustomPreset(const char* name);// сохранить с именем
 	void ImportNoteMap(const char* path);
 	void ExportNoteMap(const char* path);
@@ -458,7 +458,7 @@ private:
 
 	// Конфигурируемый маппинг MIDI-нот (UI thread / serialization)
 	DrumNoteMap mNoteMap;
-	int         mCurrentPreset    = 0;     // -1=unsaved, 0-4=builtin, 5=named custom
+	int         mCurrentPreset    = 0;     // -1=unsaved, 0-3=builtin, 5=named custom
 	DrumNoteMap mCustomPreset;             // user-saved named preset (in-memory)
 	std::string mCustomPresetName;         // name for the saved custom preset
 	bool        mHasCustomPreset  = false; // true once user has saved a custom preset

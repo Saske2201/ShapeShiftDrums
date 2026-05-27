@@ -1024,8 +1024,8 @@ int TemplateProject::GetSampleNote(const char* group) const
 // PRESET SYSTEM
 // ======================================================================
 
-// Built-in note-map presets (order matches mCurrentPreset 0..4)
-static const DrumNoteMap kBuiltinPresets[5] = {
+// Built-in note-map presets (order matches mCurrentPreset 0..3)
+static const DrumNoteMap kBuiltinPresets[4] = {
     // 0 — DEFAULT (General MIDI)
     { 36, 38, 50, 48, 43, 57, 49, 52, 56, 51, 53, 42, 44, 46 },
     // 1 — EZDRUMMER (EZDrummer 2/3 standard MIDI mapping)
@@ -1034,10 +1034,8 @@ static const DrumNoteMap kBuiltinPresets[5] = {
     { 36, 40, 50, 47, 41, 57, 49, 52, 55, 51, 53, 42, 44, 46 },
     // 3 — ADDICTIVE (Addictive Drums 2)
     { 36, 38, 50, 48, 43, 49, 57, 52, 55, 51, 53, 42, 44, 46 },
-    // 4 — SHAPESHIFTDRUMS (native kit layout)
-    { 36, 38, 50, 48, 43, 57, 49, 52, 56, 51, 53, 42, 44, 46 },
 };
-static const char* kPresetNames[5] = { "DEFAULT", "EZDRUMMER", "GGD", "ADDICTIVE", "SHAPESHIFTDRUMS" };
+static const char* kPresetNames[4] = { "DEFAULT", "EZDRUMMER", "GGD", "ADDICTIVE" };
 
 static std::string GetCustomPresetPath_()
 {
@@ -1058,7 +1056,7 @@ static std::string GetCustomPresetPath_()
 
 void TemplateProject::ApplyPreset(int idx)
 {
-    if (idx >= 0 && idx < 5)
+    if (idx >= 0 && idx < 4)
     {
         mNoteMap = kBuiltinPresets[idx];
         mCurrentPreset = idx;
@@ -2625,107 +2623,159 @@ class NoteMapPresetButton final : public IControl
 {
 public:
     NoteMapPresetButton(const IRECT& r, TemplateProject& plug)
-        : IControl(r), mPlug(plug) {}
+        : IControl(r), mPlug(plug) { SyncLabel(); }
 
     void Draw(IGraphics& g) override
     {
-        const IColor bg = mIsDown
-            ? IColor(255, 75, 95, 120)
-            : (mIsOver ? IColor(240, 60, 78, 100) : IColor(210, 45, 60, 80));
+        // Всегда синхронизируем локальный лейбл с состоянием плагина
+        // (работает даже если SetDirty после OnPopupMenuSelection не сработал)
+        SyncLabel();
+
+        const IColor bg = mWantNameEntry
+            ? IColor(255, 60, 110, 60)
+            : (mIsDown  ? IColor(255, 75, 95, 120)
+            : (mIsOver  ? IColor(240, 60, 78, 100)
+                        : IColor(210, 45, 60, 80)));
         g.FillRoundRect(bg, mRECT, 4.f);
         g.DrawRoundRect(IColor(180, 140, 160, 190), mRECT, 4.f);
 
-        const int p = mPlug.GetCurrentPreset();
-        std::string displayName;
-        if (p >= 0 && p < 5)
-            displayName = kPresetNames[p];
-        else if (p == 5 && mPlug.HasCustomPreset())
-            displayName = mPlug.GetCustomPresetName();
-        else
-            displayName = "CUSTOM";
-
-        // Укорачиваем длинные имена
-        if (displayName.size() > 11) displayName = displayName.substr(0, 10) + "~";
-
-        std::string txt = displayName + " \xE2\x96\xBE"; // ▾ (UTF-8 U+25BE)
-        IText t(12.f, IColor(255, 235, 235, 235), nullptr, EAlign::Center, EVAlign::Middle);
-        g.DrawText(t, txt.c_str(), mRECT);
+        const std::string label = mWantNameEntry
+            ? ">> click to name <<"
+            : mPresetLabel + " v";
+        IText t(mWantNameEntry ? 10.f : 12.f,
+                IColor(255, 235, 235, 235), nullptr, EAlign::Center, EVAlign::Middle);
+        g.DrawText(t, label.c_str(), mRECT);
     }
 
     void OnMouseOver(float, float, const IMouseMod&) override { mIsOver = true;  SetDirty(false); }
-    void OnMouseOut() override { mIsOver = false; mIsDown = false; SetDirty(false); }
+    void OnMouseOut()  override { mIsOver = false; mIsDown = false; SetDirty(false); }
+    void OnMouseUp(float, float, const IMouseMod&) override   { mIsDown = false; SetDirty(false); }
+
     void OnMouseDown(float, float, const IMouseMod&) override
     {
-        mIsDown = true; SetDirty(false);
+        mIsDown = true;
+
+        if (mWantNameEntry)
+        {
+            // Шаг 2: пользователь кликнул — открываем текстовый ввод
+            // (CreateTextEntry надёжно работает только из OnMouseDown, не из popup-коллбека)
+            mWantNameEntry = false;
+            mAwaitingName  = true;
+            const std::string defName = mPlug.HasCustomPreset()
+                ? mPlug.GetCustomPresetName() : "My Custom";
+            SetDirty(false);
+            if (GetUI())
+                GetUI()->CreateTextEntry(*this,
+                    IText(12.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle),
+                    mRECT, defName.c_str());
+            return;
+        }
+
+        SetDirty(false);
+        if (!GetUI()) return;
 
         IPopupMenu menu;
-        menu.AddItem("DEFAULT",          0);
-        menu.AddItem("EZDRUMMER",        1);
-        menu.AddItem("GGD",              2);
-        menu.AddItem("ADDICTIVE",        3);
-        menu.AddItem("SHAPESHIFTDRUMS",  4);
+        menu.AddItem("DEFAULT",   0);
+        menu.AddItem("EZDRUMMER", 1);
+        menu.AddItem("GGD",       2);
+        menu.AddItem("ADDICTIVE", 3);
 
-        // Если есть именованный пользовательский пресет — добавляем его
         if (mPlug.HasCustomPreset())
         {
             menu.AddSeparator();
             menu.AddItem(mPlug.GetCustomPresetName().c_str(), 5);
         }
-
         menu.AddSeparator();
         menu.AddItem("Save as Custom...", 6);
 
         GetUI()->CreatePopupMenu(*this, menu, mRECT);
     }
-    void OnMouseUp(float, float, const IMouseMod&) override { mIsDown = false; SetDirty(false); }
 
     void OnPopupMenuSelection(IPopupMenu* pMenu, int) override
     {
-        mIsDown = false; SetDirty(false);
-        if (!pMenu) return;
+        mIsDown = false;
+        if (!pMenu) { SetDirty(false); return; }
         auto* item = pMenu->GetChosenItem();
-        if (!item) return;
+        if (!item) { SetDirty(false); return; }
         const int tag = item->GetTag();
 
-        if (tag >= 0 && tag <= 5)
+        if (tag >= 0 && tag <= 3)
         {
             mPlug.ApplyPreset(tag);
-            // Обновляем все note-селекторы
-            if (GetUI())
-                for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
-                    if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
-            SetDirty(false);
+            mPresetLabel = kPresetNames[tag]; // обновляем лейбл явно, не через SetDirty
+            RefreshAll();
+        }
+        else if (tag == 5 && mPlug.HasCustomPreset())
+        {
+            mPlug.ApplyPreset(5);
+            mPresetLabel = mPlug.GetCustomPresetName();
+            if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
+            RefreshAll();
         }
         else if (tag == 6)
         {
-            // Открываем текстовый ввод для имени пресета
-            mAwaitingName = true;
-            const std::string curName = mPlug.HasCustomPreset()
-                ? mPlug.GetCustomPresetName() : "My Custom";
-            if (GetUI())
-                GetUI()->CreateTextEntry(*this,
-                    IText(12.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle),
-                    mRECT, curName.c_str());
+            // Шаг 1: сохраняем с текущим/дефолтным именем, переходим в режим ожидания клика
+            const char* tempName = mPlug.HasCustomPreset()
+                ? mPlug.GetCustomPresetName().c_str() : "My Custom";
+            mPlug.SaveCustomPreset(tempName);
+            mPresetLabel = mPlug.GetCustomPresetName();
+            if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
+            mWantNameEntry = true; // следующий клик откроет поле ввода имени
         }
+
+        SetDirty(false);
     }
 
     void OnTextEntryCompletion(const char* txt, int) override
     {
-        if (!mAwaitingName) { SetDirty(false); return; }
         mAwaitingName = false;
         if (txt && *txt)
         {
             mPlug.SaveCustomPreset(txt);
-            if (GetUI())
-                for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
-                    if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
+            mPresetLabel = txt;
+            if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
+            RefreshAll();
         }
         SetDirty(false);
     }
 
 private:
+    // Синхронизировать mPresetLabel с текущим состоянием плагина
+    void SyncLabel()
+    {
+        if (mWantNameEntry || mAwaitingName) return; // не перебивать во время ввода имени
+        const int p = mPlug.GetCurrentPreset();
+        if (p >= 0 && p < 4)
+        {
+            mPresetLabel = kPresetNames[p];
+        }
+        else if (p == 5 && mPlug.HasCustomPreset())
+        {
+            mPresetLabel = mPlug.GetCustomPresetName();
+            if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
+        }
+        else
+        {
+            mPresetLabel = "CUSTOM";
+        }
+    }
+
+    void RefreshAll()
+    {
+        if (!GetUI()) return;
+        for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
+            if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
+        // Дёргаем оверлей тоже — некоторые бэкенды кэшируют регион оверлея
+        if (auto* ov = GetUI()->GetControlWithTag(kCtrlTagMappingOverlay))
+            ov->SetDirty(false);
+    }
+
     TemplateProject& mPlug;
-    bool mIsOver = false, mIsDown = false, mAwaitingName = false;
+    std::string mPresetLabel   = "DEFAULT";
+    bool mIsOver        = false;
+    bool mIsDown        = false;
+    bool mWantNameEntry = false; // ждём клика для ввода имени
+    bool mAwaitingName  = false; // text entry открыт
 };
 
 //======================================================================
