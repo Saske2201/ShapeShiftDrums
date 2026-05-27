@@ -1024,9 +1024,9 @@ int TemplateProject::GetSampleNote(const char* group) const
 // PRESET SYSTEM
 // ======================================================================
 
-// Built-in note-map presets (order matches mCurrentPreset 0..3)
-static const DrumNoteMap kBuiltinPresets[4] = {
-    // 0 — DEFAULT (текущие дефолты плагина, General MIDI)
+// Built-in note-map presets (order matches mCurrentPreset 0..4)
+static const DrumNoteMap kBuiltinPresets[5] = {
+    // 0 — DEFAULT (General MIDI)
     { 36, 38, 50, 48, 43, 57, 49, 52, 56, 51, 53, 42, 44, 46 },
     // 1 — EZDRUMMER (EZDrummer 2/3 standard MIDI mapping)
     { 36, 38, 48, 45, 43, 57, 49, 52, 55, 51, 53, 42, 44, 46 },
@@ -1034,8 +1034,10 @@ static const DrumNoteMap kBuiltinPresets[4] = {
     { 36, 40, 50, 47, 41, 57, 49, 52, 55, 51, 53, 42, 44, 46 },
     // 3 — ADDICTIVE (Addictive Drums 2)
     { 36, 38, 50, 48, 43, 49, 57, 52, 55, 51, 53, 42, 44, 46 },
+    // 4 — SHAPESHIFTDRUMS (native kit layout)
+    { 36, 38, 50, 48, 43, 57, 49, 52, 56, 51, 53, 42, 44, 46 },
 };
-static const char* kPresetNames[5] = { "DEFAULT", "EZDRUMMER", "GGD", "ADDICTIVE", "CUSTOM 1" };
+static const char* kPresetNames[5] = { "DEFAULT", "EZDRUMMER", "GGD", "ADDICTIVE", "SHAPESHIFTDRUMS" };
 
 static std::string GetCustomPresetPath_()
 {
@@ -1056,33 +1058,52 @@ static std::string GetCustomPresetPath_()
 
 void TemplateProject::ApplyPreset(int idx)
 {
-    if (idx >= 0 && idx < 4)
+    if (idx >= 0 && idx < 5)
     {
         mNoteMap = kBuiltinPresets[idx];
         mCurrentPreset = idx;
         ApplyNoteMap();
     }
-    else if (idx == 4)
+    else if (idx == 5 && mHasCustomPreset)
     {
-        const std::string path = GetCustomPresetPath_();
-        if (!path.empty() && FileExists_(path.c_str()))
-        {
-            ImportNoteMap(path.c_str());
-        }
-        mCurrentPreset = 4;
+        mNoteMap = mCustomPreset;
+        mCurrentPreset = 5;
+        ApplyNoteMap();
     }
 }
 
-void TemplateProject::SaveCustomPreset()
+void TemplateProject::SaveCustomPreset(const char* name)
 {
+    const std::string presetName = (name && *name) ? name : "My Custom";
+    mCustomPreset     = mNoteMap;
+    mCustomPresetName = presetName;
+    mHasCustomPreset  = true;
+    mCurrentPreset    = 5;
+
+    // Также сохраняем в файл (для бэкапа / импорта в следующей сессии)
     const std::string path = GetCustomPresetPath_();
     if (path.empty()) return;
     try {
         std::filesystem::create_directories(
             std::filesystem::path(path).parent_path());
     } catch (...) {}
-    ExportNoteMap(path.c_str());
-    mCurrentPreset = 4;
+    std::ofstream ofs(path);
+    if (!ofs) return;
+    ofs << "# preset_name=" << presetName << "\n";
+    ofs << "kick="       << mNoteMap.kick       << "\n";
+    ofs << "snare="      << mNoteMap.snare      << "\n";
+    ofs << "tom1="       << mNoteMap.tom1       << "\n";
+    ofs << "tom2="       << mNoteMap.tom2       << "\n";
+    ofs << "tom3="       << mNoteMap.tom3       << "\n";
+    ofs << "crashL="     << mNoteMap.crashL     << "\n";
+    ofs << "crashR="     << mNoteMap.crashR     << "\n";
+    ofs << "china="      << mNoteMap.china      << "\n";
+    ofs << "splash="     << mNoteMap.splash     << "\n";
+    ofs << "rideEdge="   << mNoteMap.rideEdge   << "\n";
+    ofs << "rideCenter=" << mNoteMap.rideCenter << "\n";
+    ofs << "hhClosed="   << mNoteMap.hhClosed   << "\n";
+    ofs << "hhChoke="    << mNoteMap.hhChoke    << "\n";
+    ofs << "hhOpen="     << mNoteMap.hhOpen     << "\n";
 }
 
 void TemplateProject::ImportNoteMap(const char* path)
@@ -1179,6 +1200,29 @@ bool TemplateProject::SerializeState(IByteChunk& chunk) const
     chunk.PutBytes(&mNoteMap.hhOpen,     (int)sizeof(int));
     chunk.PutBytes(&mCurrentPreset,      (int)sizeof(int));
 
+    // === CUSTOM PRESET (новые поля, backward-compat) ===
+    const int hasCustom = mHasCustomPreset ? 1 : 0;
+    chunk.PutBytes(&hasCustom, (int)sizeof(int));
+    if (mHasCustomPreset)
+    {
+        WDL_String cn(mCustomPresetName.c_str());
+        chunk.PutStr(cn.Get());
+        chunk.PutBytes(&mCustomPreset.kick,       (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.snare,      (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.tom1,       (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.tom2,       (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.tom3,       (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.crashL,     (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.crashR,     (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.china,      (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.splash,     (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.rideEdge,   (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.rideCenter, (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.hhClosed,   (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.hhChoke,    (int)sizeof(int));
+        chunk.PutBytes(&mCustomPreset.hhOpen,     (int)sizeof(int));
+    }
+
     return true;
 }
 
@@ -1221,6 +1265,43 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
 
     // mCurrentPreset (добавлено позже, старые пресеты не имеют этого поля)
     { int tmp = mCurrentPreset; int np = chunk.GetBytes(&tmp, sizeof(int), pos); if (np > 0) { mCurrentPreset = tmp; pos = np; } }
+
+    // === CUSTOM PRESET (новые поля, backward-compat) ===
+    {
+        int hasCustom = 0;
+        int np = chunk.GetBytes(&hasCustom, sizeof(int), pos);
+        if (np > 0)
+        {
+            pos = np;
+            if (hasCustom)
+            {
+                mHasCustomPreset = true;
+                WDL_String cn;
+                int sp = chunk.GetStr(cn, pos);
+                if (sp > 0) { pos = sp; mCustomPresetName = cn.Get(); }
+
+                auto readCN = [&](int& field) {
+                    int tmp = field;
+                    int rp = chunk.GetBytes(&tmp, sizeof(int), pos);
+                    if (rp > 0) { field = std::clamp(tmp, 0, 127); pos = rp; }
+                };
+                readCN(mCustomPreset.kick);
+                readCN(mCustomPreset.snare);
+                readCN(mCustomPreset.tom1);
+                readCN(mCustomPreset.tom2);
+                readCN(mCustomPreset.tom3);
+                readCN(mCustomPreset.crashL);
+                readCN(mCustomPreset.crashR);
+                readCN(mCustomPreset.china);
+                readCN(mCustomPreset.splash);
+                readCN(mCustomPreset.rideEdge);
+                readCN(mCustomPreset.rideCenter);
+                readCN(mCustomPreset.hhClosed);
+                readCN(mCustomPreset.hhChoke);
+                readCN(mCustomPreset.hhOpen);
+            }
+        }
+    }
 
     // проверяем и пытаемся загрузить (LoadSndlib применит mNoteMap)
     mSndLibReady.store(false, std::memory_order_release);
@@ -2379,7 +2460,7 @@ public:
         {
             IRECT lr = mRECT.GetPadded(-3.f);
             lr.R = noteX - 4.f;
-            IText t(13.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
+            IText t(15.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
             g.DrawText(t, mLabel.c_str(), lr);
         }
 
@@ -2392,7 +2473,7 @@ public:
         g.DrawRoundRect(IColor(130, 130, 155, 185), noteBox, 3.f);
 
         // Текст ноты: "C2"
-        IText nt(13.f, IColor(255, 255, 215, 80), nullptr, EAlign::Center, EVAlign::Middle);
+        IText nt(15.f, IColor(255, 255, 215, 80), nullptr, EAlign::Center, EVAlign::Middle);
         g.DrawText(nt, NoteToStr(mNote).c_str(), noteBox);
 
         // Стрелки < > при наведении (подсказка что можно тянуть)
@@ -2555,9 +2636,19 @@ public:
         g.DrawRoundRect(IColor(180, 140, 160, 190), mRECT, 4.f);
 
         const int p = mPlug.GetCurrentPreset();
-        const char* name = (p >= 0 && p <= 4) ? kPresetNames[p] : "CUSTOM";
-        std::string txt = std::string(name) + " v";
-        IText t(11.f, IColor(255, 235, 235, 235), nullptr, EAlign::Center, EVAlign::Middle);
+        std::string displayName;
+        if (p >= 0 && p < 5)
+            displayName = kPresetNames[p];
+        else if (p == 5 && mPlug.HasCustomPreset())
+            displayName = mPlug.GetCustomPresetName();
+        else
+            displayName = "CUSTOM";
+
+        // Укорачиваем длинные имена
+        if (displayName.size() > 11) displayName = displayName.substr(0, 10) + "~";
+
+        std::string txt = displayName + " \xE2\x96\xBE"; // ▾ (UTF-8 U+25BE)
+        IText t(12.f, IColor(255, 235, 235, 235), nullptr, EAlign::Center, EVAlign::Middle);
         g.DrawText(t, txt.c_str(), mRECT);
     }
 
@@ -2568,14 +2659,21 @@ public:
         mIsDown = true; SetDirty(false);
 
         IPopupMenu menu;
-        menu.AddItem("DEFAULT",    0);
-        menu.AddItem("EZDRUMMER",  1);
-        menu.AddItem("GGD",        2);
-        menu.AddItem("ADDICTIVE",  3);
+        menu.AddItem("DEFAULT",          0);
+        menu.AddItem("EZDRUMMER",        1);
+        menu.AddItem("GGD",              2);
+        menu.AddItem("ADDICTIVE",        3);
+        menu.AddItem("SHAPESHIFTDRUMS",  4);
+
+        // Если есть именованный пользовательский пресет — добавляем его
+        if (mPlug.HasCustomPreset())
+        {
+            menu.AddSeparator();
+            menu.AddItem(mPlug.GetCustomPresetName().c_str(), 5);
+        }
+
         menu.AddSeparator();
-        menu.AddItem("CUSTOM 1",   4);
-        menu.AddSeparator();
-        menu.AddItem("Save as Custom", 5);
+        menu.AddItem("Save as Custom...", 6);
 
         GetUI()->CreatePopupMenu(*this, menu, mRECT);
     }
@@ -2589,25 +2687,45 @@ public:
         if (!item) return;
         const int tag = item->GetTag();
 
-        if (tag >= 0 && tag <= 4)
+        if (tag >= 0 && tag <= 5)
         {
             mPlug.ApplyPreset(tag);
+            // Обновляем все note-селекторы
+            if (GetUI())
+                for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
+                    if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
+            SetDirty(false);
         }
-        else if (tag == 5)
+        else if (tag == 6)
         {
-            mPlug.SaveCustomPreset();
+            // Открываем текстовый ввод для имени пресета
+            mAwaitingName = true;
+            const std::string curName = mPlug.HasCustomPreset()
+                ? mPlug.GetCustomPresetName() : "My Custom";
+            if (GetUI())
+                GetUI()->CreateTextEntry(*this,
+                    IText(12.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle),
+                    mRECT, curName.c_str());
         }
+    }
 
-        // Обновляем все note-селекторы
-        if (GetUI())
-            for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
-                if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
+    void OnTextEntryCompletion(const char* txt, int) override
+    {
+        if (!mAwaitingName) { SetDirty(false); return; }
+        mAwaitingName = false;
+        if (txt && *txt)
+        {
+            mPlug.SaveCustomPreset(txt);
+            if (GetUI())
+                for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
+                    if (auto* c = GetUI()->GetControlWithTag(t)) c->SetDirty(false);
+        }
         SetDirty(false);
     }
 
 private:
     TemplateProject& mPlug;
-    bool mIsOver = false, mIsDown = false;
+    bool mIsOver = false, mIsDown = false, mAwaitingName = false;
 };
 
 //======================================================================
@@ -2626,7 +2744,7 @@ public:
             : (mIsOver ? IColor(240, 60, 80, 100) : IColor(210, 45, 60, 80));
         g.FillRoundRect(bg, mRECT, 4.f);
         g.DrawRoundRect(IColor(180, 140, 160, 190), mRECT, 4.f);
-        IText t(11.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle);
+        IText t(12.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle);
         g.DrawText(t, "IMPORT", mRECT);
     }
 
@@ -2674,7 +2792,7 @@ public:
             : (mIsOver ? IColor(240, 60, 80, 100) : IColor(210, 45, 60, 80));
         g.FillRoundRect(bg, mRECT, 4.f);
         g.DrawRoundRect(IColor(180, 140, 160, 190), mRECT, 4.f);
-        IText t(11.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle);
+        IText t(12.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle);
         g.DrawText(t, "EXPORT", mRECT);
     }
 
@@ -4273,7 +4391,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 // Хелпер: добавить текстовый лейбл к оверлею (без ctrlTag)
                 auto addHdrLabel = [&](const IRECT& r, const char* txt)
                 {
-                    IText lTxt(11.f, IColor(255,225,225,225), nullptr, EAlign::Near, EVAlign::Middle);
+                    IText lTxt(13.f, IColor(255,225,225,225), nullptr, EAlign::Near, EVAlign::Middle);
                     auto* c = pGraphics->AttachControl(new ITextControl(r, txt, lTxt));
                     pOverlayL->LinkControl(c); c->Hide(true);
                 };
