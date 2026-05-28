@@ -1309,65 +1309,71 @@ void TemplateProject::ImportNoteMap(const char* path)
     std::ifstream ifs(path);
     if (!ifs) return;
 
+    // .nka format: first line is "%settings___user_mapping", then 96 integers (one per line).
+    // ShapeShiftDrums positions: 0=kick 1=snare 2=tom1 3=tom2 4=tom3
+    //   5=crashL 6=crashR 7=china 8=splash 9=rideEdge 10=rideCenter
+    //   11=hhClosed 12=hhChoke 13=hhOpen; 14-95 unused (-1).
+    std::string header;
+    if (!std::getline(ifs, header)) return;
+    if (header != "%settings___user_mapping") return;
+
+    int* const kFields[14] = {
+        &mNoteMap.kick, &mNoteMap.snare,
+        &mNoteMap.tom1, &mNoteMap.tom2, &mNoteMap.tom3,
+        &mNoteMap.crashL, &mNoteMap.crashR, &mNoteMap.china, &mNoteMap.splash,
+        &mNoteMap.rideEdge, &mNoteMap.rideCenter,
+        &mNoteMap.hhClosed, &mNoteMap.hhChoke, &mNoteMap.hhOpen
+    };
+
     std::string line;
-    while (std::getline(ifs, line))
+    int pos = 0;
+    while (pos < 96 && std::getline(ifs, line))
     {
-        if (line.empty() || line[0] == '#') continue;
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-
-        std::string key = line.substr(0, eq);
-        std::string val = line.substr(eq + 1);
-        // trim
-        while (!key.empty() && std::isspace((unsigned char)key.back()))  key.pop_back();
-        while (!val.empty() && std::isspace((unsigned char)val.front())) val.erase(0, 1);
-        while (!val.empty() && std::isspace((unsigned char)val.back()))  val.pop_back();
-
+        if (line.empty()) { ++pos; continue; }
         try {
-            const int note = std::clamp(std::stoi(val), 0, 127);
-            int* field = nullptr;
-            if      (key == "kick")       field = &mNoteMap.kick;
-            else if (key == "snare")      field = &mNoteMap.snare;
-            else if (key == "tom1")       field = &mNoteMap.tom1;
-            else if (key == "tom2")       field = &mNoteMap.tom2;
-            else if (key == "tom3")       field = &mNoteMap.tom3;
-            else if (key == "crashL")     field = &mNoteMap.crashL;
-            else if (key == "crashR")     field = &mNoteMap.crashR;
-            else if (key == "china")      field = &mNoteMap.china;
-            else if (key == "splash")     field = &mNoteMap.splash;
-            else if (key == "rideEdge")   field = &mNoteMap.rideEdge;
-            else if (key == "rideCenter") field = &mNoteMap.rideCenter;
-            else if (key == "hhClosed")   field = &mNoteMap.hhClosed;
-            else if (key == "hhChoke")    field = &mNoteMap.hhChoke;
-            else if (key == "hhOpen")     field = &mNoteMap.hhOpen;
-            if (field) *field = note;
-        }
-        catch (...) {}
+            const int val = std::stoi(line);
+            if (pos < 14 && val >= 0 && val <= 127)
+                *kFields[pos] = val;
+        } catch (...) {}
+        ++pos;
     }
-    ApplyNoteMap(); // синхронизируем DrumKit
-    mCurrentPreset = -1; // помечаем как custom после импорта
+
+    ApplyNoteMap();
+    mCurrentPreset = -1;
 }
 
 void TemplateProject::ExportNoteMap(const char* path)
 {
     if (!path || !*path) return;
-    std::ofstream ofs(path);
+
+    // Ensure .nka extension
+    std::string outPath = path;
+    if (outPath.size() < 4 ||
+        outPath.compare(outPath.size() - 4, 4, ".nka") != 0)
+        outPath += ".nka";
+
+    std::ofstream ofs(outPath);
     if (!ofs) return;
-    ofs << "# ShapeShiftDrums Drum Mapping\n";
-    ofs << "kick="       << mNoteMap.kick       << "\n";
-    ofs << "snare="      << mNoteMap.snare      << "\n";
-    ofs << "tom1="       << mNoteMap.tom1       << "\n";
-    ofs << "tom2="       << mNoteMap.tom2       << "\n";
-    ofs << "tom3="       << mNoteMap.tom3       << "\n";
-    ofs << "crashL="     << mNoteMap.crashL     << "\n";
-    ofs << "crashR="     << mNoteMap.crashR     << "\n";
-    ofs << "china="      << mNoteMap.china      << "\n";
-    ofs << "splash="     << mNoteMap.splash     << "\n";
-    ofs << "rideEdge="   << mNoteMap.rideEdge   << "\n";
-    ofs << "rideCenter=" << mNoteMap.rideCenter << "\n";
-    ofs << "hhClosed="   << mNoteMap.hhClosed   << "\n";
-    ofs << "hhChoke="    << mNoteMap.hhChoke    << "\n";
-    ofs << "hhOpen="     << mNoteMap.hhOpen     << "\n";
+
+    // .nka format: header + 96 integers.
+    // Positions 0-13 = our 14 instruments; 14-95 = -1.
+    const int kValues[96] = {
+        mNoteMap.kick, mNoteMap.snare,
+        mNoteMap.tom1, mNoteMap.tom2, mNoteMap.tom3,
+        mNoteMap.crashL, mNoteMap.crashR, mNoteMap.china, mNoteMap.splash,
+        mNoteMap.rideEdge, mNoteMap.rideCenter,
+        mNoteMap.hhClosed, mNoteMap.hhChoke, mNoteMap.hhOpen,
+        // positions 14-95: unused
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1
+    };
+
+    ofs << "%settings___user_mapping\n";
+    for (int i = 0; i < 96; ++i)
+        ofs << kValues[i] << "\n";
 }
 
 // === SerializeState ===
@@ -3135,7 +3141,7 @@ public:
         if (!mRECT.Contains(x, y) || !GetUI()) return;
 
         WDL_String fileName, dir;
-        GetUI()->PromptForFile(fileName, dir, EFileAction::Open, "txt",
+        GetUI()->PromptForFile(fileName, dir, EFileAction::Open, "nka",
             [this](const WDL_String& pickedFile, const WDL_String&)
             {
                 if (pickedFile.GetLength() > 0)
@@ -3183,7 +3189,7 @@ public:
         if (!mRECT.Contains(x, y) || !GetUI()) return;
 
         WDL_String fileName, dir;
-        GetUI()->PromptForFile(fileName, dir, EFileAction::Save, "txt",
+        GetUI()->PromptForFile(fileName, dir, EFileAction::Save, "nka",
             [this](const WDL_String& pickedFile, const WDL_String&)
             {
                 if (pickedFile.GetLength() > 0)
