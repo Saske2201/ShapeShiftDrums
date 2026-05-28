@@ -2756,8 +2756,8 @@ public:
         if (mIsOver)
             g.FillRect(IColor(20, 255, 255, 255), mRECT);
 
-        // Название инструмента (левые 90%)
-        const float noteX = mRECT.L + mRECT.W() * 0.90f;
+        // Название инструмента (левые 85%)
+        const float noteX = mRECT.L + mRECT.W() * 0.85f;
         {
             IRECT lr(mRECT.L + 1.f, mRECT.T, noteX - 4.f, mRECT.B);
             IText t(22.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
@@ -2804,6 +2804,7 @@ public:
 
     void OnMouseDown(float x, float, const IMouseMod& mod) override
     {
+        mDragFromNote  = IsNoteArea(x);
         mDragStartX    = x;
         mDragStartNote = mNote;
         mDragged       = false;
@@ -2812,6 +2813,8 @@ public:
 
     void OnMouseDrag(float x, float, float, float, const IMouseMod&) override
     {
+        if (!mDragFromNote) return;
+
         const float dx = x - mDragStartX;
         if (std::abs(dx) > 2.f) { mDragged = true; mDragging = true; }
 
@@ -2835,9 +2838,9 @@ public:
         mDragging = false;
 
         // Если не было drag и клик попал в зону ноты → открыть ввод
-        if (!mDragged && IsNoteArea(x) && GetUI())
+        if (!mDragged && mDragFromNote && GetUI())
         {
-            const float noteX = mRECT.L + mRECT.W() * 0.90f;
+            const float noteX = mRECT.L + mRECT.W() * 0.85f;
             const IRECT entryR(noteX + 2.f, mRECT.T + 2.f, mRECT.R - 4.f, mRECT.B - 2.f);
             mEditStr = std::to_string(mNote);
             GetUI()->CreateTextEntry(*this, IText(14.f, COLOR_WHITE), entryR, mEditStr.c_str());
@@ -2862,18 +2865,19 @@ public:
     void SyncNote() { mNote = mPlug.GetSampleNote(mGroup.c_str()); SetDirty(false); }
 
 private:
-    bool IsNoteArea(float x) const { return x >= mRECT.L + mRECT.W() * 0.58f; }
+    bool IsNoteArea(float x) const { return x >= mRECT.L + mRECT.W() * 0.85f; }
 
     std::string      mLabel;
     int              mNote;
     TemplateProject& mPlug;
     std::string      mGroup;
     std::string      mEditStr;
-    bool             mIsOver      = false;
-    bool             mNoteHover   = false;
-    bool             mDragged     = false;
-    bool             mDragging    = false;
-    float            mDragStartX  = 0.f;
+    bool             mIsOver        = false;
+    bool             mNoteHover     = false;
+    bool             mDragged       = false;
+    bool             mDragging      = false;
+    bool             mDragFromNote  = false;
+    float            mDragStartX    = 0.f;
     int              mDragStartNote = 0;
 
     // MIDI note → "C2" (без числа)
