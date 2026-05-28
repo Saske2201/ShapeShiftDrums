@@ -3003,7 +3003,7 @@ public:
         if (!item) { SetDirty(false); return; }
         const int tag = item->GetTag();
 
-        if (tag >= 0 && tag <= 3)
+        if (tag >= 0 && tag <= 4)
         {
             mPlug.ApplyPreset(tag);
             mPresetLabel = kPresetNames[tag];
