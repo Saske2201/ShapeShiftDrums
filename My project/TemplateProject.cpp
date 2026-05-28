@@ -3527,16 +3527,6 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
         }
     }
 
-    // Fallback: populate kit from dev-machine path WITHOUT setting mSndLibPath/mSndLibReady.
-    // This mirrors pre-variations behavior so UnserializeState with no saved path
-    // calls ApplyNoteMap() only and leaves the constructor-loaded samples intact.
-    if (!mSndLibReady.load(std::memory_order_acquire))
-    {
-        static const char* kDevPath = "e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/ShapeShiftDrums.sndlib";
-        if (FileExists_(kDevPath))
-            LoadSndlibAndPopulateKit(*static_cast<DrumKit*>(mKitOpaque), kDevPath, mNoteMap);
-    }
-
     // --- ПАРАМЕТРЫ ---
     GetParam(kParamKick)->InitDouble("Kick Level", 0.75, 0.0, 1.0, 0.001, "");
     GetParam(kParamSnare)->InitDouble("Snare Level", 0.75, 0.0, 1.0, 0.001, "");
