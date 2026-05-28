@@ -1473,12 +1473,16 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
         }
     }
 
-    // проверяем и пытаемся загрузить (LoadSndlib применит mNoteMap)
+    // Загружаем sndlib: сначала из сохранённого пути проекта, иначе из закешированного пути
+    // (для старых проектов где mSndLibPath не сохранялся — fallback на sCachedPath_).
     mSndLibReady.store(false, std::memory_order_release);
-    if (mSndLibPath.GetLength())
-        TryLoadSndlib_(mSndLibPath.Get());
+    const char* loadPath = mSndLibPath.GetLength()  ? mSndLibPath.Get()
+                         : sCachedPath_.GetLength() ? sCachedPath_.Get()
+                         : nullptr;
+    if (loadPath)
+        TryLoadSndlib_(loadPath);
     else
-        ApplyNoteMap(); // kit без звуков, но ноты применяем на случай, если звуки загрузятся позже
+        ApplyNoteMap(); // путь неизвестен — обновим ноты; звуки загрузятся при открытии окна
 
     return pos;
 }
