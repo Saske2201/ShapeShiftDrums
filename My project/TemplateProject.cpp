@@ -3573,11 +3573,6 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
     GetParam(kMasterSustain)->InitDouble("Sustain", 0.5, 0.0, 1.0, 0.001);
 
 
-    // Загружаем sndlib через единственный путь кода — TryLoadSndlib_.
-    // Это гарантирует, что используются актуальные имена файлов и система вариаций.
-    TryLoadSndlib_("e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/ShapeShiftDrums.sndlib");
-    if (!mSndLibReady.load(std::memory_order_acquire))
-        DBGMSG("Pack not loaded at hardcoded dev path; will prompt user\n");
 
 #if IPLUG_EDITOR
     // --- графика/верстка ---
