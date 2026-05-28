@@ -2756,12 +2756,12 @@ public:
         if (mIsOver)
             g.FillRect(IColor(20, 255, 255, 255), mRECT);
 
-        // Название инструмента (левые 62%)
-        const float noteX = mRECT.L + mRECT.W() * 0.62f;
+        // Название инструмента (левые 70%)
+        const float noteX = mRECT.L + mRECT.W() * 0.70f;
         {
             IRECT lr = mRECT.GetPadded(-3.f);
             lr.R = noteX - 4.f;
-            IText t(15.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
+            IText t(17.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
             g.DrawText(t, mLabel.c_str(), lr);
         }
 
@@ -2774,7 +2774,7 @@ public:
         g.DrawRoundRect(IColor(130, 130, 155, 185), noteBox, 3.f);
 
         // Текст ноты: "C2"
-        IText nt(15.f, IColor(255, 255, 215, 80), nullptr, EAlign::Center, EVAlign::Middle);
+        IText nt(17.f, IColor(255, 255, 215, 80), nullptr, EAlign::Center, EVAlign::Middle);
         g.DrawText(nt, NoteToStr(mNote).c_str(), noteBox);
 
         // Стрелки < > при наведении (подсказка что можно тянуть)
@@ -4701,7 +4701,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 // ---- Header (3 строки: PRESET / IMPORT / EXPORT) ----
                 const float hdrH  = 28.f;   // высота строки хедера
                 const float hdrG  = 7.f;    // зазор между строками хедера
-                const float lblW  = rowW * 0.56f;
+                const float lblW  = rowW * 0.62f;
                 const float btnW  = rowW - lblW;
 
                 float hy = mappingRectL.T + padY;
@@ -4712,7 +4712,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 // Хелпер: добавить текстовый лейбл к оверлею (без ctrlTag)
                 auto addHdrLabel = [&](const IRECT& r, const char* txt)
                 {
-                    IText lTxt(13.f, IColor(255,225,225,225), nullptr, EAlign::Near, EVAlign::Middle);
+                    IText lTxt(15.f, IColor(255,225,225,225), nullptr, EAlign::Near, EVAlign::Middle);
                     auto* c = pGraphics->AttachControl(new ITextControl(r, txt, lTxt));
                     pOverlayL->LinkControl(c); c->Hide(true);
                 };
