@@ -1502,83 +1502,84 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const D
     // All files live at archive root level with new naming convention.
     // Velocity layers (Kick_Velo_*, Kick_2_Velo_*, Snare_Velo_*, Snare_2_Velo_*) are not listed
     // and will be silently skipped.
+    // Tags must match exactly what DrumKit::Process() expects in the TagTap list.
     struct SlotDef { const char* baseName; const char* tag; const char* group; int note; int varIdx; };
     const SlotDef kSlots[] = {
-        // KICK
-        {"Kick_1.cpp",              "kick_close",        "kick",       nm.kick,       0},
-        {"Kick_2.cpp",              "kick_close",        "kick",       nm.kick,       1},
-        {"Kick_Room_1.cpp",         "kick_room",         "kick",       nm.kick,       0},
-        {"Kick_Room_2.cpp",         "kick_room",         "kick",       nm.kick,       1},
+        // KICK — close tag is "kick" (not "kick_close")
+        {"Kick_1.cpp",              "kick",          "kick",       nm.kick,       0},
+        {"Kick_2.cpp",              "kick",          "kick",       nm.kick,       1},
+        {"Kick_Room_1.cpp",         "kick_room",     "kick",       nm.kick,       0},
+        {"Kick_Room_2.cpp",         "kick_room",     "kick",       nm.kick,       1},
         // SNARE
-        {"Snare_1.cpp",             "snare_close",       "snare",      nm.snare,      0},
-        {"Snare_2.cpp",             "snare_close",       "snare",      nm.snare,      1},
-        {"Snare_Room_1.cpp",        "snare_room",        "snare",      nm.snare,      0},
-        {"Snare_Room_2.cpp",        "snare_room",        "snare",      nm.snare,      1},
+        {"Snare_1.cpp",             "snare_close",   "snare",      nm.snare,      0},
+        {"Snare_2.cpp",             "snare_close",   "snare",      nm.snare,      1},
+        {"Snare_Room_1.cpp",        "snare_room",    "snare",      nm.snare,      0},
+        {"Snare_Room_2.cpp",        "snare_room",    "snare",      nm.snare,      1},
         // TOM 1 (Rack Tom 1) — one variation only
-        {"Rack_Tom_1_1.cpp",        "tom1_close",        "tom1",       nm.tom1,       0},
-        {"Rack_Tom_1_Room_1.cpp",   "tom1_room",         "tom1",       nm.tom1,       0},
-        // Rack_Tom_2.cpp and Rack_Tom_Room_2.cpp are duplicates of Rack_Tom_2_2 / Rack_Tom_2_Room_2 — skipped
+        {"Rack_Tom_1_1.cpp",        "tom01_close",   "tom1",       nm.tom1,       0},
+        {"Rack_Tom_1_Room_1.cpp",   "racktom1_room", "tom1",       nm.tom1,       0},
+        // Rack_Tom_2.cpp / Rack_Tom_Room_2.cpp skipped (duplicates of Rack_Tom_2_2 / Rack_Tom_2_Room_2)
         // TOM 2 (Rack Tom 2) — two variations
-        {"Rack_Tom_2_1.cpp",        "tom2_close",        "tom2",       nm.tom2,       0},
-        {"Rack_Tom_2_2.cpp",        "tom2_close",        "tom2",       nm.tom2,       1},
-        {"Rack_Tom_2_Room_1.cpp",   "tom2_room",         "tom2",       nm.tom2,       0},
-        {"Rack_Tom_2_Room_2.cpp",   "tom2_room",         "tom2",       nm.tom2,       1},
-        // TOM 3 (Floor Tom)
-        {"Floor_Tom_1.cpp",         "tom3_close",        "tom3",       nm.tom3,       0},
-        {"Floor_Tom_2.cpp",         "tom3_close",        "tom3",       nm.tom3,       1},
-        {"Floor_Tom_Room_1.cpp",    "tom3_room",         "tom3",       nm.tom3,       0},
-        {"Floor_Tom_Room_2.cpp",    "tom3_room",         "tom3",       nm.tom3,       1},
+        {"Rack_Tom_2_1.cpp",        "tom02_close",   "tom2",       nm.tom2,       0},
+        {"Rack_Tom_2_2.cpp",        "tom02_close",   "tom2",       nm.tom2,       1},
+        {"Rack_Tom_2_Room_1.cpp",   "racktom2_room", "tom2",       nm.tom2,       0},
+        {"Rack_Tom_2_Room_2.cpp",   "racktom2_room", "tom2",       nm.tom2,       1},
+        // TOM 3 (Floor Tom) — "tom03_close" / "tom_room"
+        {"Floor_Tom_1.cpp",         "tom03_close",   "tom3",       nm.tom3,       0},
+        {"Floor_Tom_2.cpp",         "tom03_close",   "tom3",       nm.tom3,       1},
+        {"Floor_Tom_Room_1.cpp",    "tom_room",      "tom3",       nm.tom3,       0},
+        {"Floor_Tom_Room_2.cpp",    "tom_room",      "tom3",       nm.tom3,       1},
         // CRASH L
-        {"Crash_L.cpp",             "crashL_close",      "crashL",     nm.crashL,     0},
-        {"Crash_L_2.cpp",           "crashL_close",      "crashL",     nm.crashL,     1},
-        {"Crash_L_Room.cpp",        "crashL_room",       "crashL",     nm.crashL,     0},
-        {"Crash_L_Room_2.cpp",      "crashL_room",       "crashL",     nm.crashL,     1},
+        {"Crash_L.cpp",             "crashL_close",  "crashL",     nm.crashL,     0},
+        {"Crash_L_2.cpp",           "crashL_close",  "crashL",     nm.crashL,     1},
+        {"Crash_L_Room.cpp",        "crashL_room",   "crashL",     nm.crashL,     0},
+        {"Crash_L_Room_2.cpp",      "crashL_room",   "crashL",     nm.crashL,     1},
         // CRASH R
-        {"Crash_R.cpp",             "crashR_close",      "crashR",     nm.crashR,     0},
-        {"Crash_R_2.cpp",           "crashR_close",      "crashR",     nm.crashR,     1},
-        {"Crash_R_Room.cpp",        "crashR_room",       "crashR",     nm.crashR,     0},
-        {"Crash_R_Room_2.cpp",      "crashR_room",       "crashR",     nm.crashR,     1},
+        {"Crash_R.cpp",             "crashR_close",  "crashR",     nm.crashR,     0},
+        {"Crash_R_2.cpp",           "crashR_close",  "crashR",     nm.crashR,     1},
+        {"Crash_R_Room.cpp",        "crashR_room",   "crashR",     nm.crashR,     0},
+        {"Crash_R_Room_2.cpp",      "crashR_room",   "crashR",     nm.crashR,     1},
         // CHINA
-        {"China.cpp",               "china_close",       "china",      nm.china,      0},
-        {"China_2.cpp",             "china_close",       "china",      nm.china,      1},
-        {"China_Room.cpp",          "china_room",        "china",      nm.china,      0},
-        {"China_Room_2.cpp",        "china_room",        "china",      nm.china,      1},
-        // SPLASH — "Splash_.cpp" (trailing underscore) = variation 1
-        {"Splash_.cpp",             "splash_close",      "splash",     nm.splash,     0},
-        {"Splash_2.cpp",            "splash_close",      "splash",     nm.splash,     1},
-        {"Splash_Room.cpp",         "splash_room",       "splash",     nm.splash,     0},
-        {"Splash_2_Room.cpp",       "splash_room",       "splash",     nm.splash,     1},
-        // RIDE EDGE — "Ride_.cpp" (trailing underscore) = variation 1
-        {"Ride_.cpp",               "ride_close",        "rideEdge",   nm.rideEdge,   0},
-        {"Ride_2.cpp",              "ride_close",        "rideEdge",   nm.rideEdge,   1},
-        {"Ride_Room.cpp",           "ride_room",         "rideEdge",   nm.rideEdge,   0},
-        {"Ride_Room_2.cpp",         "ride_room",         "rideEdge",   nm.rideEdge,   1},
-        // RIDE CENTER — "Ride_Center_Room_.cpp" (trailing underscore) = variation 1
-        {"Ride_Center.cpp",         "rideCenter_close",  "rideCenter", nm.rideCenter, 0},
-        {"Ride_Center_2.cpp",       "rideCenter_close",  "rideCenter", nm.rideCenter, 1},
-        {"Ride_Center_Room_.cpp",   "rideCenter_room",   "rideCenter", nm.rideCenter, 0},
-        {"Ride_Center_Room_2.cpp",  "rideCenter_room",   "rideCenter", nm.rideCenter, 1},
-        // HH CLOSED
-        {"HiHat_Closed.cpp",        "hihat_closed",      "hhClosed",   nm.hhClosed,   0},
-        {"HiHat_Closed_2.cpp",      "hihat_closed",      "hhClosed",   nm.hhClosed,   1},
-        {"HiHat_Closed_3.cpp",      "hihat_closed",      "hhClosed",   nm.hhClosed,   2},
-        {"HiHat_Closed_Room.cpp",   "hihat_closed_room", "hhClosed",   nm.hhClosed,   0},
-        {"HiHat_Closed_Room_2.cpp", "hihat_closed_room", "hhClosed",   nm.hhClosed,   1},
-        {"HiHat_Closed_Room_3.cpp", "hihat_closed_room", "hhClosed",   nm.hhClosed,   2},
-        // HH CHOKE (foot-close articulation)
-        {"HiHat_Close.cpp",         "hihat_choke",       "hhChoke",    nm.hhChoke,    0},
-        {"HiHat_Close_2.cpp",       "hihat_choke",       "hhChoke",    nm.hhChoke,    1},
-        {"HiHat_Close_3.cpp",       "hihat_choke",       "hhChoke",    nm.hhChoke,    2},
-        {"HiHat_Close_Room.cpp",    "hihat_choke_room",  "hhChoke",    nm.hhChoke,    0},
-        {"HiHat_Close_Room_2.cpp",  "hihat_choke_room",  "hhChoke",    nm.hhChoke,    1},
-        {"HiHat_Close_Room_3.cpp",  "hihat_choke_room",  "hhChoke",    nm.hhChoke,    2},
-        // HH OPEN — "HiHat_Open_Room_.cpp" (trailing underscore) = variation 1
-        {"HiHat_Open.cpp",          "hihat_open",        "hhOpen",     nm.hhOpen,     0},
-        {"HiHat_Open_2.cpp",        "hihat_open",        "hhOpen",     nm.hhOpen,     1},
-        {"HiHat_Open_3.cpp",        "hihat_open",        "hhOpen",     nm.hhOpen,     2},
-        {"HiHat_Open_Room_.cpp",    "hihat_open_room",   "hhOpen",     nm.hhOpen,     0},
-        {"HiHat_Open_Room_2.cpp",   "hihat_open_room",   "hhOpen",     nm.hhOpen,     1},
-        {"HiHat_Open_Room_3.cpp",   "hihat_open_room",   "hhOpen",     nm.hhOpen,     2},
+        {"China.cpp",               "china_close",   "china",      nm.china,      0},
+        {"China_2.cpp",             "china_close",   "china",      nm.china,      1},
+        {"China_Room.cpp",          "china_room",    "china",      nm.china,      0},
+        {"China_Room_2.cpp",        "china_room",    "china",      nm.china,      1},
+        // SPLASH
+        {"Splash_.cpp",             "splash_close",  "splash",     nm.splash,     0},
+        {"Splash_2.cpp",            "splash_close",  "splash",     nm.splash,     1},
+        {"Splash_Room.cpp",         "splash_room",   "splash",     nm.splash,     0},
+        {"Splash_2_Room.cpp",       "splash_room",   "splash",     nm.splash,     1},
+        // RIDE EDGE — both rideEdge and rideCenter share "ride_close" / "ride_room" tap
+        {"Ride_.cpp",               "ride_close",    "rideEdge",   nm.rideEdge,   0},
+        {"Ride_2.cpp",              "ride_close",    "rideEdge",   nm.rideEdge,   1},
+        {"Ride_Room.cpp",           "ride_room",     "rideEdge",   nm.rideEdge,   0},
+        {"Ride_Room_2.cpp",         "ride_room",     "rideEdge",   nm.rideEdge,   1},
+        // RIDE CENTER
+        {"Ride_Center.cpp",         "ride_close",    "rideCenter", nm.rideCenter, 0},
+        {"Ride_Center_2.cpp",       "ride_close",    "rideCenter", nm.rideCenter, 1},
+        {"Ride_Center_Room_.cpp",   "ride_room",     "rideCenter", nm.rideCenter, 0},
+        {"Ride_Center_Room_2.cpp",  "ride_room",     "rideCenter", nm.rideCenter, 1},
+        // HH CLOSED — all three HH articulations share "hi-hat_close" / "hihat_room"
+        {"HiHat_Closed.cpp",        "hi-hat_close",  "hhClosed",   nm.hhClosed,   0},
+        {"HiHat_Closed_2.cpp",      "hi-hat_close",  "hhClosed",   nm.hhClosed,   1},
+        {"HiHat_Closed_3.cpp",      "hi-hat_close",  "hhClosed",   nm.hhClosed,   2},
+        {"HiHat_Closed_Room.cpp",   "hihat_room",    "hhClosed",   nm.hhClosed,   0},
+        {"HiHat_Closed_Room_2.cpp", "hihat_room",    "hhClosed",   nm.hhClosed,   1},
+        {"HiHat_Closed_Room_3.cpp", "hihat_room",    "hhClosed",   nm.hhClosed,   2},
+        // HH CHOKE
+        {"HiHat_Close.cpp",         "hi-hat_close",  "hhChoke",    nm.hhChoke,    0},
+        {"HiHat_Close_2.cpp",       "hi-hat_close",  "hhChoke",    nm.hhChoke,    1},
+        {"HiHat_Close_3.cpp",       "hi-hat_close",  "hhChoke",    nm.hhChoke,    2},
+        {"HiHat_Close_Room.cpp",    "hihat_room",    "hhChoke",    nm.hhChoke,    0},
+        {"HiHat_Close_Room_2.cpp",  "hihat_room",    "hhChoke",    nm.hhChoke,    1},
+        {"HiHat_Close_Room_3.cpp",  "hihat_room",    "hhChoke",    nm.hhChoke,    2},
+        // HH OPEN
+        {"HiHat_Open.cpp",          "hi-hat_close",  "hhOpen",     nm.hhOpen,     0},
+        {"HiHat_Open_2.cpp",        "hi-hat_close",  "hhOpen",     nm.hhOpen,     1},
+        {"HiHat_Open_3.cpp",        "hi-hat_close",  "hhOpen",     nm.hhOpen,     2},
+        {"HiHat_Open_Room_.cpp",    "hihat_room",    "hhOpen",     nm.hhOpen,     0},
+        {"HiHat_Open_Room_2.cpp",   "hihat_room",    "hhOpen",     nm.hhOpen,     1},
+        {"HiHat_Open_Room_3.cpp",   "hihat_room",    "hhOpen",     nm.hhOpen,     2},
     };
     const int kNumSlots = (int)(sizeof(kSlots) / sizeof(kSlots[0]));
 
