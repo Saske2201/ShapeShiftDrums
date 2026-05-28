@@ -1311,13 +1311,12 @@ void TemplateProject::ImportNoteMap(const char* path)
     std::ifstream ifs(path);
     if (!ifs) return;
 
-    // .nka format: first line is "%settings___user_mapping", then 96 integers (one per line).
+    // .nka format: first line is a header (ignored), then 96 integers (one per line).
     // ShapeShiftDrums positions: 0=kick 1=snare 2=tom1 3=tom2 4=tom3
     //   5=crashL 6=crashR 7=china 8=splash 9=rideEdge 10=rideCenter
     //   11=hhClosed 12=hhChoke 13=hhOpen; 14-95 unused (-1).
     std::string header;
     if (!std::getline(ifs, header)) return;
-    if (header != "%settings___user_mapping") return;
 
     int* const kFields[14] = {
         &mNoteMap.kick, &mNoteMap.snare,
