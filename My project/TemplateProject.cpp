@@ -1116,17 +1116,19 @@ int TemplateProject::GetSampleNote(const char* group) const
 // ======================================================================
 
 // Built-in note-map presets (order matches mCurrentPreset 0..3)
-static const DrumNoteMap kBuiltinPresets[4] = {
+static const DrumNoteMap kBuiltinPresets[5] = {
     // 0 — DEFAULT (General MIDI)
     { 36, 38, 50, 48, 43, 57, 49, 52, 56, 51, 53, 42, 44, 46 },
-    // 1 — EZDRUMMER (EZDrummer 2/3 standard MIDI mapping)
-    { 36, 38, 48, 45, 43, 57, 49, 52, 55, 51, 53, 42, 44, 46 },
+    // 1 — EZDRUMMER (from EZDrummer .nka reference mapping)
+    { 36, 38, 48, 47, 43, 49, 50, 52, 55, 51, 53, 42, 44, 46 },
     // 2 — GGD (GetGood Drums OKW-style)
     { 36, 40, 50, 47, 41, 57, 49, 52, 55, 51, 53, 42, 44, 46 },
     // 3 — ADDICTIVE (Addictive Drums 2)
     { 36, 38, 50, 48, 43, 49, 57, 52, 55, 51, 53, 42, 44, 46 },
+    // 4 — SUPERIOR (from Superior Drummer .nka reference mapping)
+    { 36, 38, 48, 47, 43, 49, 50, 52, 57, 51, 53, 42, 44, 46 },
 };
-static const char* kPresetNames[4] = { "DEFAULT", "EZDRUMMER", "GGD", "ADDICTIVE" };
+static const char* kPresetNames[5] = { "DEFAULT", "EZDRUMMER", "GGD", "ADDICTIVE", "SUPERIOR" };
 
 static std::string GetCustomPresetsFilePath_()
 {
@@ -1232,7 +1234,7 @@ static void LoadAllCustomPresets_(std::vector<CustomPreset>& presets)
 
 void TemplateProject::ApplyPreset(int idx)
 {
-    if (idx >= 0 && idx < 4)
+    if (idx >= 0 && idx < 5)
     {
         mNoteMap = kBuiltinPresets[idx];
         mCurrentPreset = idx;
@@ -2969,6 +2971,7 @@ public:
         addBuiltin("EZDRUMMER", 1);
         addBuiltin("GGD",       2);
         addBuiltin("ADDICTIVE", 3);
+        addBuiltin("SUPERIOR",  4);
 
         if (mPlug.HasCustomPresets())
         {
@@ -3072,7 +3075,7 @@ private:
     {
         if (mAwaitingName) return;
         const int p = mPlug.GetCurrentPreset();
-        if (p >= 0 && p < 4)
+        if (p >= 0 && p < 5)
         {
             mPresetLabel = kPresetNames[p];
         }
