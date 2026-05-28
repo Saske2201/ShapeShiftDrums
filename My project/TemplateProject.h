@@ -364,7 +364,7 @@ private:
 	// --- SNDLIB persistence & gating ---
 	bool TryLoadSndlib_(const char* path);     // NEW: проверить расширение/наличие/загрузить
 	void PromptSndlibIfNeeded_();              // NEW: показать модалку, если не готово
-	void ShowSndlibModal_();                   // NEW: отобразить уже созданную модалку по тегам
+	void ShowSndlibModal_(const char* errorMsg = nullptr); // NEW: отобразить уже созданную модалку по тегам
 	std::atomic<bool> mSndLibReady{ false };   // NEW: можно ли играть звук?
 	WDL_String mSndLibPath;
 	

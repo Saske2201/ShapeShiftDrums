@@ -936,7 +936,7 @@ bool TemplateProject::TryLoadSndlib_(const char* path)
 }
 
 // === INSERT in TemplateProject.cpp (методы класса) ===
-void TemplateProject::ShowSndlibModal_()
+void TemplateProject::ShowSndlibModal_(const char* errorMsg)
 {
 #if IPLUG_EDITOR
     if (!GetUI()) return;
@@ -946,6 +946,17 @@ void TemplateProject::ShowSndlibModal_()
     if (auto* e = ui->GetControlWithTag(kTagSndEdit)) { e->Hide(false); e->SetDirty(false); }
     if (auto* c = ui->GetControlWithTag(kTagSndClose)) { c->Hide(false); c->SetDirty(false); }
     if (auto* b = ui->GetControlWithTag(kTagSndBrowse)) { b->Hide(false); b->SetDirty(false); }
+    if (errorMsg && *errorMsg)
+    {
+        if (auto* w = ui->GetControlWithTag(kTagSndWarn))
+        {
+            const IText kWarnStyle(16.f, IColor(255, 255, 80, 80), "Roboto-Regular", EAlign::Center, EVAlign::Top);
+            w->As<ITextControl>()->SetText(kWarnStyle);
+            w->As<ITextControl>()->SetStr(errorMsg);
+            w->Hide(false);
+            w->SetDirty(false);
+        }
+    }
     ui->SetAllControlsDirty();
 #endif
 }
@@ -955,6 +966,9 @@ void TemplateProject::PromptSndlibIfNeeded_()
     // уже готовы? ничего не делаем
     if (mSndLibReady.load(std::memory_order_acquire))
         return;
+
+    // был ли путь известен раньше (реестр/проект)? нужно для выбора сообщения в модалке
+    bool hadPath = sCachedPath_.GetLength() > 0 || mSndLibPath.GetLength() > 0;
 
     // если в процессе уже есть валидный путь (другой инстанс его прочитал/загрузил) — используем его
     if (sCachedPath_.GetLength())
@@ -973,7 +987,10 @@ void TemplateProject::PromptSndlibIfNeeded_()
     {
         WDL_String saved;
         if (LoadSndPathPref_(saved))
+        {
             sCachedPath_.Set(saved.Get());
+            hadPath = true; // путь был в реестре/prefs
+        }
     }
 
     if (sCachedPath_.GetLength() && TryLoadSndlib_(sCachedPath_.Get()))
@@ -983,9 +1000,12 @@ void TemplateProject::PromptSndlibIfNeeded_()
         return;
     }
 
-    // по-прежнему не готово — покажем модалку только сейчас (при открытии UI)
+    // по-прежнему не готово — показываем модалку с нужным сообщением
 #if IPLUG_EDITOR
-    ShowSndlibModal_();
+    const char* errMsg = hadPath
+        ? "Oops, something happened to the file. Please specify the path again."
+        : nullptr;
+    ShowSndlibModal_(errMsg);
 #endif
 }
 
