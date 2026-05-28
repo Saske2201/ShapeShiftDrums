@@ -749,7 +749,8 @@ namespace {
             std::string path;
             std::string tag;
             std::string sampleGroup;     // группа семпла ("kick","snare","tom1",...,"hhOpen")
-            int varIdx = 0;              // 0 = variation 1, 1 = variation 2, …
+            int varIdx   = 0;            // 0 = variation 1, 1 = variation 2, …
+            int velLayer = 0;            // 0 = plays at any velocity, 1 = hardest … N = softest
             std::unique_ptr<AudioFile<SampleT>> file;
             std::unique_ptr<OneShotPlayer>      player;
             std::atomic<float> gain{ 1.0f };
@@ -784,15 +785,17 @@ namespace {
             AddFromMemoryVar(note, bytes, length, tag, group, 0);
         }
 
-        // Вариант с явным индексом вариации (0 = вариация 1, 1 = вариация 2, …)
+        // Вариант с явным индексом вариации и опциональным velocity-слоем
+        // velLayer: 0 = играет при любой velocity, 1 = самый сильный удар … N = самый слабый
         void AddFromMemoryVar(int note, const uint8_t* bytes, int length,
-                              const char* tag, const char* group, int varIdx)
+                              const char* tag, const char* group, int varIdx, int velLayer = 0)
         {
             auto e = std::make_unique<Entry>();
             e->note.store(note, std::memory_order_relaxed);
             e->tag = tag ? tag : "";
             e->sampleGroup = group ? group : "";
-            e->varIdx = varIdx;
+            e->varIdx   = varIdx;
+            e->velLayer = velLayer;
             e->file = std::make_unique<AudioFile<SampleT>>();
             e->player = std::make_unique<OneShotPlayer>();
 
@@ -806,13 +809,15 @@ namespace {
                 const int gi = GroupIdx(e->sampleGroup);
                 if (gi >= 0 && varIdx + 1 > mVarCounts[gi])
                     mVarCounts[gi] = varIdx + 1;
+                if (gi >= 0 && velLayer > mVelLayers[gi])
+                    mVelLayers[gi] = velLayer;
 
                 mEntries.push_back(std::move(e));
             }
             else
             {
-                DBGMSG("Failed to load sample from memory: %s var%d\n",
-                       e->tag.c_str(), varIdx);
+                DBGMSG("Failed to load sample from memory: %s var%d vel%d\n",
+                       e->tag.c_str(), varIdx, velLayer);
             }
         }
 
@@ -820,20 +825,37 @@ namespace {
 
         void Prepare(double hostSR) { for (auto& e : mEntries) e->player->Prepare(hostSR); }
 
+        // Returns 1-based velocity layer index (1 = hardest, N = softest).
+        // Boundaries match user-defined thresholds: 90-127 / 70-90 / 30-70 / 1-30 (MIDI 0-127).
+        static int VelLayerIdx(int numLayers, float vel01)
+        {
+            if (numLayers <= 1) return 1;
+            if (vel01 >= 0.709f) return 1;   // MIDI >= 90
+            if (vel01 >= 0.551f) return 2;   // MIDI 70-89
+            if (vel01 >= 0.236f) return 3;   // MIDI 30-69
+            return 4;                         // MIDI < 30
+        }
+
         void Trigger(int note, float vel01)
         {
-            // Pick a random variation for each group before scanning entries so that
-            // all entries in the same group (close + room) always use the same variation.
+            // Pick random round-robin variation per group (close+room always share the same).
             int chosenVar[kNumGroups];
             for (int gi = 0; gi < kNumGroups; ++gi)
                 chosenVar[gi] = (mVarCounts[gi] > 1) ? (rand() % mVarCounts[gi]) : 0;
+
+            // Pick velocity layer per group based on vel01.
+            int chosenVelLayer[kNumGroups];
+            for (int gi = 0; gi < kNumGroups; ++gi)
+                chosenVelLayer[gi] = VelLayerIdx(mVelLayers[gi], vel01);
 
             for (auto& e : mEntries)
             {
                 if (e->note.load(std::memory_order_relaxed) != note) continue;
                 const int gi = GroupIdx(e->sampleGroup);
-                const int activeVar = (gi >= 0) ? chosenVar[gi] : 0;
-                if (e->varIdx == activeVar)
+                const int activeVar      = (gi >= 0) ? chosenVar[gi]      : 0;
+                const int activeVelLayer = (gi >= 0) ? chosenVelLayer[gi] : 0;
+                if (e->varIdx == activeVar &&
+                    (e->velLayer == 0 || e->velLayer == activeVelLayer))
                     e->player->Trigger(vel01);
             }
         }
@@ -893,7 +915,7 @@ namespace {
         void Clear()
         {
             mEntries.clear();
-            for (int i = 0; i < kNumGroups; ++i) mVarCounts[i] = 0;
+            for (int i = 0; i < kNumGroups; ++i) { mVarCounts[i] = 0; mVelLayers[i] = 0; }
         }
 
         bool IsEmpty() const { return mEntries.empty(); }
@@ -906,7 +928,8 @@ namespace {
 
     private:
         std::vector<std::unique_ptr<Entry>> mEntries;
-        int mVarCounts[kNumGroups]{};  // сколько вариаций загружено per-group
+        int mVarCounts[kNumGroups]{};   // how many round-robin variations per group
+        int mVelLayers[kNumGroups]{};   // how many velocity layers per group (0 = none)
     };
 
   
@@ -1522,88 +1545,98 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const D
 
     kit.Clear();
 
-    // Explicit map: archive filename → (tag, group, note, varIdx).
-    // All files live at archive root level with new naming convention.
-    // Velocity layers (Kick_Velo_*, Kick_2_Velo_*, Snare_Velo_*, Snare_2_Velo_*) are not listed
-    // and will be silently skipped.
+    // Explicit map: archive filename → (tag, group, note, varIdx, velLayer).
+    // velLayer: 0 = plays at any velocity; 1 = hardest (MIDI 90-127) … 4 = softest (MIDI < 30).
     // Tags must match exactly what DrumKit::Process() expects in the TagTap list.
-    struct SlotDef { const char* baseName; const char* tag; const char* group; int note; int varIdx; };
+    struct SlotDef { const char* baseName; const char* tag; const char* group; int note; int varIdx; int velLayer; };
     const SlotDef kSlots[] = {
-        // KICK — close tag is "kick" (not "kick_close")
-        {"Kick_1.cpp",              "kick",          "kick",       nm.kick,       0},
-        {"Kick_2.cpp",              "kick",          "kick",       nm.kick,       1},
-        {"Kick_Room_1.cpp",         "kick_room",     "kick",       nm.kick,       0},
-        {"Kick_Room_2.cpp",         "kick_room",     "kick",       nm.kick,       1},
-        // SNARE
-        {"Snare_1.cpp",             "snare_close",   "snare",      nm.snare,      0},
-        {"Snare_2.cpp",             "snare_close",   "snare",      nm.snare,      1},
-        {"Snare_Room_1.cpp",        "snare_room",    "snare",      nm.snare,      0},
-        {"Snare_Room_2.cpp",        "snare_room",    "snare",      nm.snare,      1},
-        // TOM 1 (Rack Tom 1) — one variation only
-        {"Rack_Tom_1_1.cpp",        "tom01_close",   "tom1",       nm.tom1,       0},
-        {"Rack_Tom_1_Room_1.cpp",   "racktom1_room", "tom1",       nm.tom1,       0},
-        // Rack_Tom_2.cpp / Rack_Tom_Room_2.cpp skipped (duplicates of Rack_Tom_2_2 / Rack_Tom_2_Room_2)
+        // KICK — 4 velocity layers × 2 round-robin variations; room mics have no velocity layers
+        {"Kick_Velo_1.cpp",         "kick",          "kick",       nm.kick,       0, 1},
+        {"Kick_Velo_2.cpp",         "kick",          "kick",       nm.kick,       0, 2},
+        {"Kick_Velo_3.cpp",         "kick",          "kick",       nm.kick,       0, 3},
+        {"Kick_Velo_4.cpp",         "kick",          "kick",       nm.kick,       0, 4},
+        {"Kick_2_Velo_1.cpp",       "kick",          "kick",       nm.kick,       1, 1},
+        {"Kick_2_Velo_2.cpp",       "kick",          "kick",       nm.kick,       1, 2},
+        {"Kick_2_Velo_3.cpp",       "kick",          "kick",       nm.kick,       1, 3},
+        {"Kick_2_Velo_4.cpp",       "kick",          "kick",       nm.kick,       1, 4},
+        {"Kick_Room_1.cpp",         "kick_room",     "kick",       nm.kick,       0, 0},
+        {"Kick_Room_2.cpp",         "kick_room",     "kick",       nm.kick,       1, 0},
+        // SNARE — same structure: 4 velocity layers × 2 round-robin; rooms no velocity layers
+        {"Snare_Velo_1.cpp",        "snare_close",   "snare",      nm.snare,      0, 1},
+        {"Snare_Velo_2.cpp",        "snare_close",   "snare",      nm.snare,      0, 2},
+        {"Snare_Velo_3.cpp",        "snare_close",   "snare",      nm.snare,      0, 3},
+        {"Snare_Velo_4.cpp",        "snare_close",   "snare",      nm.snare,      0, 4},
+        {"Snare_2_Velo_1.cpp",      "snare_close",   "snare",      nm.snare,      1, 1},
+        {"Snare_2_Velo_2.cpp",      "snare_close",   "snare",      nm.snare,      1, 2},
+        {"Snare_2_Velo_3.cpp",      "snare_close",   "snare",      nm.snare,      1, 3},
+        {"Snare_2_Velo_4.cpp",      "snare_close",   "snare",      nm.snare,      1, 4},
+        {"Snare_Room_1.cpp",        "snare_room",    "snare",      nm.snare,      0, 0},
+        {"Snare_Room_2.cpp",        "snare_room",    "snare",      nm.snare,      1, 0},
+        // TOM 1 (Rack Tom 1) — one variation only, no velocity layers
+        {"Rack_Tom_1_1.cpp",        "tom01_close",   "tom1",       nm.tom1,       0, 0},
+        {"Rack_Tom_1_Room_1.cpp",   "racktom1_room", "tom1",       nm.tom1,       0, 0},
+        // Rack_Tom_2.cpp / Rack_Tom_Room_2.cpp skipped (duplicates)
         // TOM 2 (Rack Tom 2) — two variations
-        {"Rack_Tom_2_1.cpp",        "tom02_close",   "tom2",       nm.tom2,       0},
-        {"Rack_Tom_2_2.cpp",        "tom02_close",   "tom2",       nm.tom2,       1},
-        {"Rack_Tom_2_Room_1.cpp",   "racktom2_room", "tom2",       nm.tom2,       0},
-        {"Rack_Tom_2_Room_2.cpp",   "racktom2_room", "tom2",       nm.tom2,       1},
-        // TOM 3 (Floor Tom) — "tom03_close" / "tom_room"
-        {"Floor_Tom_1.cpp",         "tom03_close",   "tom3",       nm.tom3,       0},
-        {"Floor_Tom_2.cpp",         "tom03_close",   "tom3",       nm.tom3,       1},
-        {"Floor_Tom_Room_1.cpp",    "tom_room",      "tom3",       nm.tom3,       0},
-        {"Floor_Tom_Room_2.cpp",    "tom_room",      "tom3",       nm.tom3,       1},
+        {"Rack_Tom_2_1.cpp",        "tom02_close",   "tom2",       nm.tom2,       0, 0},
+        {"Rack_Tom_2_2.cpp",        "tom02_close",   "tom2",       nm.tom2,       1, 0},
+        {"Rack_Tom_2_Room_1.cpp",   "racktom2_room", "tom2",       nm.tom2,       0, 0},
+        {"Rack_Tom_2_Room_2.cpp",   "racktom2_room", "tom2",       nm.tom2,       1, 0},
+        // TOM 3 (Floor Tom)
+        {"Floor_Tom_1.cpp",         "tom03_close",   "tom3",       nm.tom3,       0, 0},
+        {"Floor_Tom_2.cpp",         "tom03_close",   "tom3",       nm.tom3,       1, 0},
+        {"Floor_Tom_Room_1.cpp",    "tom_room",      "tom3",       nm.tom3,       0, 0},
+        {"Floor_Tom_Room_2.cpp",    "tom_room",      "tom3",       nm.tom3,       1, 0},
         // CRASH L
-        {"Crash_L.cpp",             "crashL_close",  "crashL",     nm.crashL,     0},
-        {"Crash_L_2.cpp",           "crashL_close",  "crashL",     nm.crashL,     1},
-        {"Crash_L_Room.cpp",        "crashL_room",   "crashL",     nm.crashL,     0},
-        {"Crash_L_Room_2.cpp",      "crashL_room",   "crashL",     nm.crashL,     1},
+        {"Crash_L.cpp",             "crashL_close",  "crashL",     nm.crashL,     0, 0},
+        {"Crash_L_2.cpp",           "crashL_close",  "crashL",     nm.crashL,     1, 0},
+        {"Crash_L_Room.cpp",        "crashL_room",   "crashL",     nm.crashL,     0, 0},
+        {"Crash_L_Room_2.cpp",      "crashL_room",   "crashL",     nm.crashL,     1, 0},
         // CRASH R
-        {"Crash_R.cpp",             "crashR_close",  "crashR",     nm.crashR,     0},
-        {"Crash_R_2.cpp",           "crashR_close",  "crashR",     nm.crashR,     1},
-        {"Crash_R_Room.cpp",        "crashR_room",   "crashR",     nm.crashR,     0},
-        {"Crash_R_Room_2.cpp",      "crashR_room",   "crashR",     nm.crashR,     1},
+        {"Crash_R.cpp",             "crashR_close",  "crashR",     nm.crashR,     0, 0},
+        {"Crash_R_2.cpp",           "crashR_close",  "crashR",     nm.crashR,     1, 0},
+        {"Crash_R_Room.cpp",        "crashR_room",   "crashR",     nm.crashR,     0, 0},
+        {"Crash_R_Room_2.cpp",      "crashR_room",   "crashR",     nm.crashR,     1, 0},
         // CHINA
-        {"China.cpp",               "china_close",   "china",      nm.china,      0},
-        {"China_2.cpp",             "china_close",   "china",      nm.china,      1},
-        {"China_Room.cpp",          "china_room",    "china",      nm.china,      0},
-        {"China_Room_2.cpp",        "china_room",    "china",      nm.china,      1},
+        {"China.cpp",               "china_close",   "china",      nm.china,      0, 0},
+        {"China_2.cpp",             "china_close",   "china",      nm.china,      1, 0},
+        {"China_Room.cpp",          "china_room",    "china",      nm.china,      0, 0},
+        {"China_Room_2.cpp",        "china_room",    "china",      nm.china,      1, 0},
         // SPLASH
-        {"Splash_.cpp",             "splash_close",  "splash",     nm.splash,     0},
-        {"Splash_2.cpp",            "splash_close",  "splash",     nm.splash,     1},
-        {"Splash_Room.cpp",         "splash_room",   "splash",     nm.splash,     0},
-        {"Splash_2_Room.cpp",       "splash_room",   "splash",     nm.splash,     1},
-        // RIDE EDGE — both rideEdge and rideCenter share "ride_close" / "ride_room" tap
-        {"Ride_.cpp",               "ride_close",    "rideEdge",   nm.rideEdge,   0},
-        {"Ride_2.cpp",              "ride_close",    "rideEdge",   nm.rideEdge,   1},
-        {"Ride_Room.cpp",           "ride_room",     "rideEdge",   nm.rideEdge,   0},
-        {"Ride_Room_2.cpp",         "ride_room",     "rideEdge",   nm.rideEdge,   1},
+        {"Splash_.cpp",             "splash_close",  "splash",     nm.splash,     0, 0},
+        {"Splash_2.cpp",            "splash_close",  "splash",     nm.splash,     1, 0},
+        {"Splash_Room.cpp",         "splash_room",   "splash",     nm.splash,     0, 0},
+        {"Splash_2_Room.cpp",       "splash_room",   "splash",     nm.splash,     1, 0},
+        // RIDE EDGE
+        {"Ride_.cpp",               "ride_close",    "rideEdge",   nm.rideEdge,   0, 0},
+        {"Ride_2.cpp",              "ride_close",    "rideEdge",   nm.rideEdge,   1, 0},
+        {"Ride_Room.cpp",           "ride_room",     "rideEdge",   nm.rideEdge,   0, 0},
+        {"Ride_Room_2.cpp",         "ride_room",     "rideEdge",   nm.rideEdge,   1, 0},
         // RIDE CENTER
-        {"Ride_Center.cpp",         "ride_close",    "rideCenter", nm.rideCenter, 0},
-        {"Ride_Center_2.cpp",       "ride_close",    "rideCenter", nm.rideCenter, 1},
-        {"Ride_Center_Room_.cpp",   "ride_room",     "rideCenter", nm.rideCenter, 0},
-        {"Ride_Center_Room_2.cpp",  "ride_room",     "rideCenter", nm.rideCenter, 1},
-        // HH CLOSED — all three HH articulations share "hi-hat_close" / "hihat_room"
-        {"HiHat_Closed.cpp",        "hi-hat_close",  "hhClosed",   nm.hhClosed,   0},
-        {"HiHat_Closed_2.cpp",      "hi-hat_close",  "hhClosed",   nm.hhClosed,   1},
-        {"HiHat_Closed_3.cpp",      "hi-hat_close",  "hhClosed",   nm.hhClosed,   2},
-        {"HiHat_Closed_Room.cpp",   "hihat_room",    "hhClosed",   nm.hhClosed,   0},
-        {"HiHat_Closed_Room_2.cpp", "hihat_room",    "hhClosed",   nm.hhClosed,   1},
-        {"HiHat_Closed_Room_3.cpp", "hihat_room",    "hhClosed",   nm.hhClosed,   2},
+        {"Ride_Center.cpp",         "ride_close",    "rideCenter", nm.rideCenter, 0, 0},
+        {"Ride_Center_2.cpp",       "ride_close",    "rideCenter", nm.rideCenter, 1, 0},
+        {"Ride_Center_Room_.cpp",   "ride_room",     "rideCenter", nm.rideCenter, 0, 0},
+        {"Ride_Center_Room_2.cpp",  "ride_room",     "rideCenter", nm.rideCenter, 1, 0},
+        // HH CLOSED
+        {"HiHat_Closed.cpp",        "hi-hat_close",  "hhClosed",   nm.hhClosed,   0, 0},
+        {"HiHat_Closed_2.cpp",      "hi-hat_close",  "hhClosed",   nm.hhClosed,   1, 0},
+        {"HiHat_Closed_3.cpp",      "hi-hat_close",  "hhClosed",   nm.hhClosed,   2, 0},
+        {"HiHat_Closed_Room.cpp",   "hihat_room",    "hhClosed",   nm.hhClosed,   0, 0},
+        {"HiHat_Closed_Room_2.cpp", "hihat_room",    "hhClosed",   nm.hhClosed,   1, 0},
+        {"HiHat_Closed_Room_3.cpp", "hihat_room",    "hhClosed",   nm.hhClosed,   2, 0},
         // HH CHOKE
-        {"HiHat_Close.cpp",         "hi-hat_close",  "hhChoke",    nm.hhChoke,    0},
-        {"HiHat_Close_2.cpp",       "hi-hat_close",  "hhChoke",    nm.hhChoke,    1},
-        {"HiHat_Close_3.cpp",       "hi-hat_close",  "hhChoke",    nm.hhChoke,    2},
-        {"HiHat_Close_Room.cpp",    "hihat_room",    "hhChoke",    nm.hhChoke,    0},
-        {"HiHat_Close_Room_2.cpp",  "hihat_room",    "hhChoke",    nm.hhChoke,    1},
-        {"HiHat_Close_Room_3.cpp",  "hihat_room",    "hhChoke",    nm.hhChoke,    2},
+        {"HiHat_Close.cpp",         "hi-hat_close",  "hhChoke",    nm.hhChoke,    0, 0},
+        {"HiHat_Close_2.cpp",       "hi-hat_close",  "hhChoke",    nm.hhChoke,    1, 0},
+        {"HiHat_Close_3.cpp",       "hi-hat_close",  "hhChoke",    nm.hhChoke,    2, 0},
+        {"HiHat_Close_Room.cpp",    "hihat_room",    "hhChoke",    nm.hhChoke,    0, 0},
+        {"HiHat_Close_Room_2.cpp",  "hihat_room",    "hhChoke",    nm.hhChoke,    1, 0},
+        {"HiHat_Close_Room_3.cpp",  "hihat_room",    "hhChoke",    nm.hhChoke,    2, 0},
         // HH OPEN
-        {"HiHat_Open.cpp",          "hi-hat_close",  "hhOpen",     nm.hhOpen,     0},
-        {"HiHat_Open_2.cpp",        "hi-hat_close",  "hhOpen",     nm.hhOpen,     1},
-        {"HiHat_Open_3.cpp",        "hi-hat_close",  "hhOpen",     nm.hhOpen,     2},
-        {"HiHat_Open_Room_.cpp",    "hihat_room",    "hhOpen",     nm.hhOpen,     0},
-        {"HiHat_Open_Room_2.cpp",   "hihat_room",    "hhOpen",     nm.hhOpen,     1},
-        {"HiHat_Open_Room_3.cpp",   "hihat_room",    "hhOpen",     nm.hhOpen,     2},
+        {"HiHat_Open.cpp",          "hi-hat_close",  "hhOpen",     nm.hhOpen,     0, 0},
+        {"HiHat_Open_2.cpp",        "hi-hat_close",  "hhOpen",     nm.hhOpen,     1, 0},
+        {"HiHat_Open_3.cpp",        "hi-hat_close",  "hhOpen",     nm.hhOpen,     2, 0},
+        {"HiHat_Open_Room_.cpp",    "hihat_room",    "hhOpen",     nm.hhOpen,     0, 0},
+        {"HiHat_Open_Room_2.cpp",   "hihat_room",    "hhOpen",     nm.hhOpen,     1, 0},
+        {"HiHat_Open_Room_3.cpp",   "hihat_room",    "hhOpen",     nm.hhOpen,     2, 0},
     };
     const int kNumSlots = (int)(sizeof(kSlots) / sizeof(kSlots[0]));
 
@@ -1639,7 +1672,7 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const D
         }
 
         kit.AddFromMemoryVar(slot->note, wavBytes.data(), (int)wavBytes.size(),
-                             slot->tag, slot->group, slot->varIdx);
+                             slot->tag, slot->group, slot->varIdx, slot->velLayer);
     }
 
     return true;
