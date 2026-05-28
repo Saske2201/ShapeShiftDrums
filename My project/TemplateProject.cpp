@@ -1514,12 +1514,11 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const D
         {"Snare_2.cpp",             "snare_close",       "snare",      nm.snare,      1},
         {"Snare_Room_1.cpp",        "snare_room",        "snare",      nm.snare,      0},
         {"Snare_Room_2.cpp",        "snare_room",        "snare",      nm.snare,      1},
-        // TOM 1 (Rack Tom 1) — "Rack_Tom_2" = Rack Tom 1, variation 2
+        // TOM 1 (Rack Tom 1) — one variation only
         {"Rack_Tom_1_1.cpp",        "tom1_close",        "tom1",       nm.tom1,       0},
-        {"Rack_Tom_2.cpp",          "tom1_close",        "tom1",       nm.tom1,       1},
         {"Rack_Tom_1_Room_1.cpp",   "tom1_room",         "tom1",       nm.tom1,       0},
-        {"Rack_Tom_Room_2.cpp",     "tom1_room",         "tom1",       nm.tom1,       1},
-        // TOM 2 (Rack Tom 2)
+        // Rack_Tom_2.cpp and Rack_Tom_Room_2.cpp are duplicates of Rack_Tom_2_2 / Rack_Tom_2_Room_2 — skipped
+        // TOM 2 (Rack Tom 2) — two variations
         {"Rack_Tom_2_1.cpp",        "tom2_close",        "tom2",       nm.tom2,       0},
         {"Rack_Tom_2_2.cpp",        "tom2_close",        "tom2",       nm.tom2,       1},
         {"Rack_Tom_2_Room_1.cpp",   "tom2_room",         "tom2",       nm.tom2,       0},
@@ -3573,67 +3572,11 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
     GetParam(kMasterSustain)->InitDouble("Sustain", 0.5, 0.0, 1.0, 0.001);
 
 
-    // 1) загрузить TemplateProject.ssdz с диска (лежит рядом с плагином/экзешником или укажите полный путь)
-    auto pack = LoadPackFromPath("e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/ShapeShiftDrums.sndlib"); // <- путь измените под своё расположение
-    if (!pack.ok) {
-        DBGMSG("Pack not loaded; fallback: no samples\n");
-    }
-    else {
-        // 2) хелпер: добавить WAV, лежащий в .h/.cpp (bin2c)
-        auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag, const char* group)
-            {
-                const SsdEntry* e = pack.archive.Find(pathInPack);
-                if (!e) { DBGMSG("Missing in pack: %s\n", pathInPack); return; }
-
-                std::vector<uint8_t> wavBytes;
-                if (!ExtractBin2CBytes(e->data.data(), e->data.size(), wavBytes)) {
-                    DBGMSG("bin2c parse failed: %s\n", pathInPack); return;
-                }
-
-                // sanity: проверим RIFF/WAVE (ожидает ваш LoadWavFromMemory)
-                if (!(wavBytes.size() >= 12 && !memcmp(wavBytes.data(), "RIFF", 4) && !memcmp(wavBytes.data() + 8, "WAVE", 4))) {
-                    DBGMSG("not a RIFF/WAVE inside: %s\n", pathInPack); return;
-                }
-
-                static_cast<DrumKit*>(mKitOpaque)->AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag, group);
-            };
-
-        // Используем mNoteMap (дефолты == kXxxNote)
-        const DrumNoteMap& nm = mNoteMap;
-        AddFromPackedHeader(nm.kick,       "Kick_Close.cpp",      "kick",         "kick");
-        AddFromPackedHeader(nm.snare,      "Snare_Close.cpp",     "snare_close",  "snare");
-        AddFromPackedHeader(nm.tom1,       "RackTom1_Close.cpp",  "tom01_close",  "tom1");
-        AddFromPackedHeader(nm.tom2,       "RackTom2_Close.cpp",  "tom02_close",  "tom2");
-        AddFromPackedHeader(nm.tom3,       "FloorTom_Close.cpp",  "tom03_close",  "tom3");
-        AddFromPackedHeader(nm.crashL,     "CrashL_Close.cpp",    "crashL_close", "crashL");
-        AddFromPackedHeader(nm.crashR,     "CrashR_Close.cpp",    "crashR_close", "crashR");
-        AddFromPackedHeader(nm.china,      "China_Close.cpp",     "china_close",  "china");
-        AddFromPackedHeader(nm.splash,     "Splash_Close.cpp",    "splash_close", "splash");
-        AddFromPackedHeader(nm.rideEdge,   "RideEdge_Close.cpp",  "ride_close",   "rideEdge");
-        AddFromPackedHeader(nm.rideCenter, "RideCenter_Close.cpp","ride_close",   "rideCenter");
-
-        AddFromPackedHeader(nm.kick,       "Kick_Room.cpp",       "kick_room",     "kick");
-        AddFromPackedHeader(nm.snare,      "Snare_Room.cpp",      "snare_room",    "snare");
-        AddFromPackedHeader(nm.tom3,       "FloorTom_Room.cpp",   "tom_room",      "tom3");
-        AddFromPackedHeader(nm.tom1,       "RackTom1_Room.cpp",   "racktom1_room", "tom1");
-        AddFromPackedHeader(nm.tom2,       "RackTom2_Room.cpp",   "racktom2_room", "tom2");
-        AddFromPackedHeader(nm.crashL,     "CrashL_Room.cpp",     "crashL_room",   "crashL");
-        AddFromPackedHeader(nm.crashR,     "CrashR_Room.cpp",     "crashR_room",   "crashR");
-        AddFromPackedHeader(nm.china,      "China_Room.cpp",      "china_room",    "china");
-        AddFromPackedHeader(nm.splash,     "Splash_Room.cpp",     "splash_room",   "splash");
-        AddFromPackedHeader(nm.rideEdge,   "RideEdge_Room.cpp",   "ride_room",     "rideEdge");
-        AddFromPackedHeader(nm.rideCenter, "RideCenter_Room.cpp", "ride_room",     "rideCenter");
-
-        // ---- HI-HAT ----
-        AddFromPackedHeader(nm.hhClosed,   "HH_Closed_Close.cpp", "hi-hat_close", "hhClosed");
-        AddFromPackedHeader(nm.hhOpen,     "HH_Open_Close.cpp",   "hi-hat_close", "hhOpen");
-        AddFromPackedHeader(nm.hhChoke,    "HH_Choked_Close.cpp", "hi-hat_close", "hhChoke");
-        AddFromPackedHeader(nm.hhClosed,   "HH_Closed_Room.cpp",  "hihat_room",   "hhClosed");
-        AddFromPackedHeader(nm.hhOpen,     "HH_Open_Room.cpp",    "hihat_room",   "hhOpen");
-        AddFromPackedHeader(nm.hhChoke,    "HH_Choked_Room.cpp",  "hihat_room",   "hhChoke");
-
-
-    }
+    // Загружаем sndlib через единственный путь кода — TryLoadSndlib_.
+    // Это гарантирует, что используются актуальные имена файлов и система вариаций.
+    TryLoadSndlib_("e:/Programs/iPlug2/iPlug2-master/iPlug2OOS-master/My project/ShapeShiftDrums.sndlib");
+    if (!mSndLibReady.load(std::memory_order_acquire))
+        DBGMSG("Pack not loaded at hardcoded dev path; will prompt user\n");
 
 #if IPLUG_EDITOR
     // --- графика/верстка ---
