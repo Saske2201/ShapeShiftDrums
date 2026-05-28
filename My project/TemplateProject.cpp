@@ -2748,7 +2748,7 @@ public:
     {
         SyncLabel();
 
-        const IColor bg = mWantNameEntry
+        const IColor bg = mAwaitingName
             ? IColor(255, 60, 110, 60)
             : (mIsDown  ? IColor(255, 75, 95, 120)
             : (mIsOver  ? IColor(240, 60, 78, 100)
@@ -2756,11 +2756,8 @@ public:
         g.FillRoundRect(bg, mRECT, 4.f);
         g.DrawRoundRect(IColor(180, 140, 160, 190), mRECT, 4.f);
 
-        const std::string label = mWantNameEntry
-            ? ">> click to name <<"
-            : mPresetLabel + " v";
-        IText t(mWantNameEntry ? 10.f : 12.f,
-                IColor(255, 235, 235, 235), nullptr, EAlign::Center, EVAlign::Middle);
+        const std::string label = mPresetLabel + " v";
+        IText t(12.f, IColor(255, 235, 235, 235), nullptr, EAlign::Center, EVAlign::Middle);
         g.DrawText(t, label.c_str(), mRECT);
     }
 
@@ -2771,32 +2768,12 @@ public:
     void OnMouseDown(float x, float y, const IMouseMod& mod) override
     {
         mIsDown = true;
-
-        // Two-step name entry: waiting for click to open text field
-        if (mWantNameEntry)
-        {
-            mWantNameEntry = false;
-            mAwaitingName  = true;
-            std::string defName;
-            if (mRenameIdx >= 0)
-                defName = mPlug.GetCustomPresetName(mRenameIdx);
-            else
-                defName = "My Custom";
-            SetDirty(false);
-            if (GetUI())
-                GetUI()->CreateTextEntry(*this,
-                    IText(12.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle),
-                    mRECT, defName.c_str());
-            return;
-        }
-
         SetDirty(false);
         if (!GetUI()) return;
 
-        // RMB: management popup for custom presets
+        // RMB: per-preset sub-menu (Rename / Delete) + Save as Custom
         if (mod.R)
         {
-            if (!mPlug.HasCustomPresets()) return;
             IPopupMenu menu;
             menu.AddItem(new IPopupMenu::Item("Custom Presets", IPopupMenu::Item::kTitle, -1));
             menu.AddSeparator();
@@ -2804,12 +2781,13 @@ public:
             for (int i = 0; i < n; i++)
             {
                 const std::string nm = mPlug.GetCustomPresetName(i);
-                const std::string rLabel = "Rename: " + nm;
-                const std::string dLabel = "Delete: " + nm;
-                menu.AddItem(new IPopupMenu::Item(rLabel.c_str(), IPopupMenu::Item::kNoFlags, 2000 + i));
-                menu.AddItem(new IPopupMenu::Item(dLabel.c_str(), IPopupMenu::Item::kNoFlags, 3000 + i));
-                if (i < n - 1) menu.AddSeparator();
+                IPopupMenu* sub = new IPopupMenu();
+                sub->AddItem(new IPopupMenu::Item("Rename...", IPopupMenu::Item::kNoFlags, 2000 + i));
+                sub->AddItem(new IPopupMenu::Item("Delete",    IPopupMenu::Item::kNoFlags, 3000 + i));
+                menu.AddItem(nm.c_str(), sub);
             }
+            if (n > 0) menu.AddSeparator();
+            menu.AddItem(new IPopupMenu::Item("Save as Custom...", IPopupMenu::Item::kNoFlags, 999));
             GetUI()->CreatePopupMenu(*this, menu, mRECT);
             return;
         }
@@ -2869,20 +2847,28 @@ public:
         }
         else if (tag == 999)
         {
-            // Save current note map as a new custom preset (name via text entry)
-            mRenameIdx = -1; // -1 = save-as (new)
-            mPlug.SaveCustomPreset("My Custom"); // temporary name, user will rename
-            const int newIdx = mPlug.GetCustomPresetCount() - 1;
-            mPresetLabel = mPlug.GetCustomPresetName(newIdx);
-            if (mPresetLabel.size() > 11) mPresetLabel = mPresetLabel.substr(0, 10) + "~";
-            mRenameIdx     = newIdx; // rename the just-created entry
-            mWantNameEntry = true;
+            mRenameIdx    = -1; // -1 = new preset
+            mAwaitingName = true;
+            SetDirty(false);
+            if (GetUI())
+                GetUI()->CreateTextEntry(*this,
+                    IText(12.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle),
+                    mRECT, "My Custom");
+            return;
         }
         else if (tag >= 2000 && tag < 3000)
         {
-            // Rename
-            mRenameIdx     = tag - 2000;
-            mWantNameEntry = true;
+            mRenameIdx    = tag - 2000;
+            mAwaitingName = true;
+            SetDirty(false);
+            if (GetUI())
+            {
+                const std::string defName = mPlug.GetCustomPresetName(mRenameIdx);
+                GetUI()->CreateTextEntry(*this,
+                    IText(12.f, COLOR_WHITE, nullptr, EAlign::Center, EVAlign::Middle),
+                    mRECT, defName.c_str());
+            }
+            return;
         }
         else if (tag >= 3000 && tag < 4000)
         {
@@ -2903,21 +2889,19 @@ public:
         {
             if (mRenameIdx >= 0)
                 mPlug.RenameCustomPreset(mRenameIdx, txt);
-            mRenameIdx = -1;
+            else
+                mPlug.SaveCustomPreset(txt);
             SyncLabel();
             RefreshAll();
         }
-        else
-        {
-            mRenameIdx = -1;
-        }
+        mRenameIdx = -1;
         SetDirty(false);
     }
 
 private:
     void SyncLabel()
     {
-        if (mWantNameEntry || mAwaitingName) return;
+        if (mAwaitingName) return;
         const int p = mPlug.GetCurrentPreset();
         if (p >= 0 && p < 4)
         {
@@ -2953,11 +2937,10 @@ private:
 
     TemplateProject& mPlug;
     std::string mPresetLabel = "DEFAULT";
-    bool mIsOver        = false;
-    bool mIsDown        = false;
-    bool mWantNameEntry = false;
-    bool mAwaitingName  = false;
-    int  mRenameIdx     = -1; // -1=save-as, >=0=rename existing
+    bool mIsOver       = false;
+    bool mIsDown       = false;
+    bool mAwaitingName = false;
+    int  mRenameIdx    = -1; // -1=save-as, >=0=rename existing
 };
 
 //======================================================================
