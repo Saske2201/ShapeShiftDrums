@@ -1523,47 +1523,94 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const D
 
     kit.Clear();
 
-    // Maps each base filename → (tag, group, note).
-    // Both variation 1 and variation 2 share the same base filename; only
-    // the path inside the sndlib differs (variation 2 lives under "variations/…/").
-    struct SlotDef { const char* baseName; const char* tag; const char* group; int note; };
+    // Explicit map: archive filename → (tag, group, note, varIdx).
+    // All files live at archive root level with new naming convention.
+    // Velocity layers (Kick_Velo_*, Kick_2_Velo_*, Snare_Velo_*, Snare_2_Velo_*) are not listed
+    // and will be silently skipped.
+    struct SlotDef { const char* baseName; const char* tag; const char* group; int note; int varIdx; };
     const SlotDef kSlots[] = {
-        // CLOSE
-        {"Kick_Close.cpp",        "kick",          "kick",       nm.kick},
-        {"Snare_Close.cpp",       "snare_close",   "snare",      nm.snare},
-        {"RackTom1_Close.cpp",    "tom01_close",   "tom1",       nm.tom1},
-        {"RackTom2_Close.cpp",    "tom02_close",   "tom2",       nm.tom2},
-        {"FloorTom_Close.cpp",    "tom03_close",   "tom3",       nm.tom3},
-        {"CrashL_Close.cpp",      "crashL_close",  "crashL",     nm.crashL},
-        {"CrashR_Close.cpp",      "crashR_close",  "crashR",     nm.crashR},
-        {"China_Close.cpp",       "china_close",   "china",      nm.china},
-        {"Splash_Close.cpp",      "splash_close",  "splash",     nm.splash},
-        {"RideEdge_Close.cpp",    "ride_close",    "rideEdge",   nm.rideEdge},
-        {"RideCenter_Close.cpp",  "ride_close",    "rideCenter", nm.rideCenter},
-        {"HH_Closed_Close.cpp",   "hi-hat_close",  "hhClosed",   nm.hhClosed},
-        {"HH_Open_Close.cpp",     "hi-hat_close",  "hhOpen",     nm.hhOpen},
-        {"HH_Choked_Close.cpp",   "hi-hat_close",  "hhChoke",    nm.hhChoke},
-        // ROOM
-        {"Kick_Room.cpp",         "kick_room",     "kick",       nm.kick},
-        {"Snare_Room.cpp",        "snare_room",    "snare",      nm.snare},
-        {"RackTom1_Room.cpp",     "racktom1_room", "tom1",       nm.tom1},
-        {"RackTom2_Room.cpp",     "racktom2_room", "tom2",       nm.tom2},
-        {"FloorTom_Room.cpp",     "tom_room",      "tom3",       nm.tom3},
-        {"CrashL_Room.cpp",       "crashL_room",   "crashL",     nm.crashL},
-        {"CrashR_Room.cpp",       "crashR_room",   "crashR",     nm.crashR},
-        {"China_Room.cpp",        "china_room",    "china",      nm.china},
-        {"Splash_Room.cpp",       "splash_room",   "splash",     nm.splash},
-        {"RideEdge_Room.cpp",     "ride_room",     "rideEdge",   nm.rideEdge},
-        {"RideCenter_Room.cpp",   "ride_room",     "rideCenter", nm.rideCenter},
-        {"HH_Closed_Room.cpp",    "hihat_room",    "hhClosed",   nm.hhClosed},
-        {"HH_Open_Room.cpp",      "hihat_room",    "hhOpen",     nm.hhOpen},
-        {"HH_Choked_Room.cpp",    "hihat_room",    "hhChoke",    nm.hhChoke},
+        // KICK
+        {"Kick_1.cpp",              "kick_close",        "kick",       nm.kick,       0},
+        {"Kick_2.cpp",              "kick_close",        "kick",       nm.kick,       1},
+        {"Kick_Room_1.cpp",         "kick_room",         "kick",       nm.kick,       0},
+        {"Kick_Room_2.cpp",         "kick_room",         "kick",       nm.kick,       1},
+        // SNARE
+        {"Snare_1.cpp",             "snare_close",       "snare",      nm.snare,      0},
+        {"Snare_2.cpp",             "snare_close",       "snare",      nm.snare,      1},
+        {"Snare_Room_1.cpp",        "snare_room",        "snare",      nm.snare,      0},
+        {"Snare_Room_2.cpp",        "snare_room",        "snare",      nm.snare,      1},
+        // TOM 1 (Rack Tom 1) — "Rack_Tom_2" = Rack Tom 1, variation 2
+        {"Rack_Tom_1_1.cpp",        "tom1_close",        "tom1",       nm.tom1,       0},
+        {"Rack_Tom_2.cpp",          "tom1_close",        "tom1",       nm.tom1,       1},
+        {"Rack_Tom_1_Room_1.cpp",   "tom1_room",         "tom1",       nm.tom1,       0},
+        {"Rack_Tom_Room_2.cpp",     "tom1_room",         "tom1",       nm.tom1,       1},
+        // TOM 2 (Rack Tom 2)
+        {"Rack_Tom_2_1.cpp",        "tom2_close",        "tom2",       nm.tom2,       0},
+        {"Rack_Tom_2_2.cpp",        "tom2_close",        "tom2",       nm.tom2,       1},
+        {"Rack_Tom_2_Room_1.cpp",   "tom2_room",         "tom2",       nm.tom2,       0},
+        {"Rack_Tom_2_Room_2.cpp",   "tom2_room",         "tom2",       nm.tom2,       1},
+        // TOM 3 (Floor Tom)
+        {"Floor_Tom_1.cpp",         "tom3_close",        "tom3",       nm.tom3,       0},
+        {"Floor_Tom_2.cpp",         "tom3_close",        "tom3",       nm.tom3,       1},
+        {"Floor_Tom_Room_1.cpp",    "tom3_room",         "tom3",       nm.tom3,       0},
+        {"Floor_Tom_Room_2.cpp",    "tom3_room",         "tom3",       nm.tom3,       1},
+        // CRASH L
+        {"Crash_L.cpp",             "crashL_close",      "crashL",     nm.crashL,     0},
+        {"Crash_L_2.cpp",           "crashL_close",      "crashL",     nm.crashL,     1},
+        {"Crash_L_Room.cpp",        "crashL_room",       "crashL",     nm.crashL,     0},
+        {"Crash_L_Room_2.cpp",      "crashL_room",       "crashL",     nm.crashL,     1},
+        // CRASH R
+        {"Crash_R.cpp",             "crashR_close",      "crashR",     nm.crashR,     0},
+        {"Crash_R_2.cpp",           "crashR_close",      "crashR",     nm.crashR,     1},
+        {"Crash_R_Room.cpp",        "crashR_room",       "crashR",     nm.crashR,     0},
+        {"Crash_R_Room_2.cpp",      "crashR_room",       "crashR",     nm.crashR,     1},
+        // CHINA
+        {"China.cpp",               "china_close",       "china",      nm.china,      0},
+        {"China_2.cpp",             "china_close",       "china",      nm.china,      1},
+        {"China_Room.cpp",          "china_room",        "china",      nm.china,      0},
+        {"China_Room_2.cpp",        "china_room",        "china",      nm.china,      1},
+        // SPLASH — "Splash_.cpp" (trailing underscore) = variation 1
+        {"Splash_.cpp",             "splash_close",      "splash",     nm.splash,     0},
+        {"Splash_2.cpp",            "splash_close",      "splash",     nm.splash,     1},
+        {"Splash_Room.cpp",         "splash_room",       "splash",     nm.splash,     0},
+        {"Splash_2_Room.cpp",       "splash_room",       "splash",     nm.splash,     1},
+        // RIDE EDGE — "Ride_.cpp" (trailing underscore) = variation 1
+        {"Ride_.cpp",               "ride_close",        "rideEdge",   nm.rideEdge,   0},
+        {"Ride_2.cpp",              "ride_close",        "rideEdge",   nm.rideEdge,   1},
+        {"Ride_Room.cpp",           "ride_room",         "rideEdge",   nm.rideEdge,   0},
+        {"Ride_Room_2.cpp",         "ride_room",         "rideEdge",   nm.rideEdge,   1},
+        // RIDE CENTER — "Ride_Center_Room_.cpp" (trailing underscore) = variation 1
+        {"Ride_Center.cpp",         "rideCenter_close",  "rideCenter", nm.rideCenter, 0},
+        {"Ride_Center_2.cpp",       "rideCenter_close",  "rideCenter", nm.rideCenter, 1},
+        {"Ride_Center_Room_.cpp",   "rideCenter_room",   "rideCenter", nm.rideCenter, 0},
+        {"Ride_Center_Room_2.cpp",  "rideCenter_room",   "rideCenter", nm.rideCenter, 1},
+        // HH CLOSED
+        {"HiHat_Closed.cpp",        "hihat_closed",      "hhClosed",   nm.hhClosed,   0},
+        {"HiHat_Closed_2.cpp",      "hihat_closed",      "hhClosed",   nm.hhClosed,   1},
+        {"HiHat_Closed_3.cpp",      "hihat_closed",      "hhClosed",   nm.hhClosed,   2},
+        {"HiHat_Closed_Room.cpp",   "hihat_closed_room", "hhClosed",   nm.hhClosed,   0},
+        {"HiHat_Closed_Room_2.cpp", "hihat_closed_room", "hhClosed",   nm.hhClosed,   1},
+        {"HiHat_Closed_Room_3.cpp", "hihat_closed_room", "hhClosed",   nm.hhClosed,   2},
+        // HH CHOKE (foot-close articulation)
+        {"HiHat_Close.cpp",         "hihat_choke",       "hhChoke",    nm.hhChoke,    0},
+        {"HiHat_Close_2.cpp",       "hihat_choke",       "hhChoke",    nm.hhChoke,    1},
+        {"HiHat_Close_3.cpp",       "hihat_choke",       "hhChoke",    nm.hhChoke,    2},
+        {"HiHat_Close_Room.cpp",    "hihat_choke_room",  "hhChoke",    nm.hhChoke,    0},
+        {"HiHat_Close_Room_2.cpp",  "hihat_choke_room",  "hhChoke",    nm.hhChoke,    1},
+        {"HiHat_Close_Room_3.cpp",  "hihat_choke_room",  "hhChoke",    nm.hhChoke,    2},
+        // HH OPEN — "HiHat_Open_Room_.cpp" (trailing underscore) = variation 1
+        {"HiHat_Open.cpp",          "hihat_open",        "hhOpen",     nm.hhOpen,     0},
+        {"HiHat_Open_2.cpp",        "hihat_open",        "hhOpen",     nm.hhOpen,     1},
+        {"HiHat_Open_3.cpp",        "hihat_open",        "hhOpen",     nm.hhOpen,     2},
+        {"HiHat_Open_Room_.cpp",    "hihat_open_room",   "hhOpen",     nm.hhOpen,     0},
+        {"HiHat_Open_Room_2.cpp",   "hihat_open_room",   "hhOpen",     nm.hhOpen,     1},
+        {"HiHat_Open_Room_3.cpp",   "hihat_open_room",   "hhOpen",     nm.hhOpen,     2},
     };
     const int kNumSlots = (int)(sizeof(kSlots) / sizeof(kSlots[0]));
 
-    auto FindSlot = [&](const std::string& base) -> const SlotDef* {
+    auto FindSlot = [&](const std::string& name) -> const SlotDef* {
         for (int i = 0; i < kNumSlots; ++i)
-            if (base == kSlots[i].baseName) return &kSlots[i];
+            if (name == kSlots[i].baseName) return &kSlots[i];
         return nullptr;
     };
 
@@ -1573,41 +1620,15 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const D
             && !memcmp(b.data() + 8, "WAVE", 4);
     };
 
-    // Single pass over all archive entries.
-    // Files at root level          → varIdx = 0  (variation 1)
-    // Files under "variations/…"   → varIdx = 1  (variation 2)
-    // "variations2/…"              → varIdx = 2  (variation 3, future)
     const size_t total = pack.archive.Count();
     for (size_t i = 0; i < total; ++i)
     {
         const SsdEntry& entry = pack.archive.ByIndex(i);
 
-        // Header files carry no audio data
         if (entry.name.size() > 2 &&
             entry.name.compare(entry.name.size() - 2, 2, ".h") == 0) continue;
 
-        // Determine variation index and stripped base filename
-        int varIdx = 0;
-        std::string baseName = entry.name;
-
-        if (entry.name.rfind("variations/", 0) == 0)        // "variations/…/Kick_Close.cpp"
-        {
-            varIdx = 1;
-            const auto slash = entry.name.rfind('/');
-            baseName = (slash != std::string::npos)
-                       ? entry.name.substr(slash + 1)
-                       : entry.name;
-        }
-        else if (entry.name.rfind("variations2/", 0) == 0)  // future 3rd variation
-        {
-            varIdx = 2;
-            const auto slash = entry.name.rfind('/');
-            baseName = (slash != std::string::npos)
-                       ? entry.name.substr(slash + 1)
-                       : entry.name;
-        }
-
-        const SlotDef* slot = FindSlot(baseName);
+        const SlotDef* slot = FindSlot(entry.name);
         if (!slot) { DBGMSG("Unknown file in pack (skipped): %s\n", entry.name.c_str()); continue; }
 
         std::vector<uint8_t> wavBytes;
@@ -1619,7 +1640,7 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const D
         }
 
         kit.AddFromMemoryVar(slot->note, wavBytes.data(), (int)wavBytes.size(),
-                             slot->tag, slot->group, varIdx);
+                             slot->tag, slot->group, slot->varIdx);
     }
 
     return true;
