@@ -2756,16 +2756,15 @@ public:
         if (mIsOver)
             g.FillRect(IColor(20, 255, 255, 255), mRECT);
 
-        // Название инструмента (левые 70%)
-        const float noteX = mRECT.L + mRECT.W() * 0.70f;
+        // Название инструмента (левые 90%)
+        const float noteX = mRECT.L + mRECT.W() * 0.90f;
         {
-            IRECT lr = mRECT.GetPadded(-3.f);
-            lr.R = noteX - 4.f;
-            IText t(17.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
+            IRECT lr(mRECT.L + 1.f, mRECT.T, noteX - 4.f, mRECT.B);
+            IText t(22.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
             g.DrawText(t, mLabel.c_str(), lr);
         }
 
-        // Блок ноты (правые 38%)
+        // Блок ноты (правые 10%)
         const IRECT noteBox(noteX + 2.f, mRECT.T + 3.f, mRECT.R - 4.f, mRECT.B - 3.f);
         const IColor noteBg = mNoteHover
             ? IColor(210, 75, 100, 130)
@@ -2774,7 +2773,7 @@ public:
         g.DrawRoundRect(IColor(130, 130, 155, 185), noteBox, 3.f);
 
         // Текст ноты: "C2"
-        IText nt(17.f, IColor(255, 255, 215, 80), nullptr, EAlign::Center, EVAlign::Middle);
+        IText nt(22.f, IColor(255, 255, 215, 80), nullptr, EAlign::Center, EVAlign::Middle);
         g.DrawText(nt, NoteToStr(mNote).c_str(), noteBox);
 
         // Стрелки < > при наведении (подсказка что можно тянуть)
@@ -2838,10 +2837,10 @@ public:
         // Если не было drag и клик попал в зону ноты → открыть ввод
         if (!mDragged && IsNoteArea(x) && GetUI())
         {
-            const float noteX = mRECT.L + mRECT.W() * 0.62f;
+            const float noteX = mRECT.L + mRECT.W() * 0.90f;
             const IRECT entryR(noteX + 2.f, mRECT.T + 2.f, mRECT.R - 4.f, mRECT.B - 2.f);
             mEditStr = std::to_string(mNote);
-            GetUI()->CreateTextEntry(*this, IText(12.f, COLOR_WHITE), entryR, mEditStr.c_str());
+            GetUI()->CreateTextEntry(*this, IText(14.f, COLOR_WHITE), entryR, mEditStr.c_str());
         }
     }
 
@@ -4756,20 +4755,20 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
 
                 struct InstrEntry { const char* label; const char* group; int* notePtr; int ctrlTag; };
                 const InstrEntry entries[] = {
-                    { "Kick",        "kick",       &mNoteMap.kick,       kCtrlTagNoteKick       },
-                    { "Snare",       "snare",      &mNoteMap.snare,      kCtrlTagNoteSnare      },
-                    { "Tom 1",       "tom1",       &mNoteMap.tom1,       kCtrlTagNoteTom1       },
-                    { "Tom 2",       "tom2",       &mNoteMap.tom2,       kCtrlTagNoteTom2       },
-                    { "Tom 3",       "tom3",       &mNoteMap.tom3,       kCtrlTagNoteTom3       },
-                    { "Crash L",     "crashL",     &mNoteMap.crashL,     kCtrlTagNoteCrashL     },
-                    { "Crash R",     "crashR",     &mNoteMap.crashR,     kCtrlTagNoteCrashR     },
-                    { "China",       "china",      &mNoteMap.china,      kCtrlTagNoteChina      },
-                    { "Splash",      "splash",     &mNoteMap.splash,     kCtrlTagNoteSplash     },
-                    { "Ride Edge",   "rideEdge",   &mNoteMap.rideEdge,   kCtrlTagNoteRideEdge   },
-                    { "Ride Center", "rideCenter", &mNoteMap.rideCenter, kCtrlTagNoteRideCenter },
-                    { "HH Closed",   "hhClosed",   &mNoteMap.hhClosed,   kCtrlTagNoteHHClosed   },
-                    { "HH Choke",    "hhChoke",    &mNoteMap.hhChoke,    kCtrlTagNoteHHChoke    },
-                    { "HH Open",     "hhOpen",     &mNoteMap.hhOpen,     kCtrlTagNoteHHOpen     },
+                    { "Kick",           "kick",       &mNoteMap.kick,       kCtrlTagNoteKick       },
+                    { "Snare",          "snare",      &mNoteMap.snare,      kCtrlTagNoteSnare      },
+                    { "Rack Tom 1",     "tom1",       &mNoteMap.tom1,       kCtrlTagNoteTom1       },
+                    { "Rack Tom 2",     "tom2",       &mNoteMap.tom2,       kCtrlTagNoteTom2       },
+                    { "Floor Tom",      "tom3",       &mNoteMap.tom3,       kCtrlTagNoteTom3       },
+                    { "Crash L",        "crashL",     &mNoteMap.crashL,     kCtrlTagNoteCrashL     },
+                    { "Crash R",        "crashR",     &mNoteMap.crashR,     kCtrlTagNoteCrashR     },
+                    { "China",          "china",      &mNoteMap.china,      kCtrlTagNoteChina      },
+                    { "Splash",         "splash",     &mNoteMap.splash,     kCtrlTagNoteSplash     },
+                    { "Ride Edge",      "rideEdge",   &mNoteMap.rideEdge,   kCtrlTagNoteRideEdge   },
+                    { "Ride Center",    "rideCenter", &mNoteMap.rideCenter, kCtrlTagNoteRideCenter },
+                    { "Hi-Hat Closed",  "hhClosed",   &mNoteMap.hhClosed,   kCtrlTagNoteHHClosed   },
+                    { "Hi-Hat Choke",   "hhChoke",    &mNoteMap.hhChoke,    kCtrlTagNoteHHChoke    },
+                    { "Hi-Hat Open",    "hhOpen",     &mNoteMap.hhOpen,     kCtrlTagNoteHHOpen     },
                 };
 
                 for (const auto& e : entries)
