@@ -727,6 +727,21 @@ namespace {
 
     struct TagTap { HostSample** tap; const char* tag; };
 
+    // ── Variation system: group names, indices, active-variation state ──
+    static constexpr int kNumGroups = 14;
+    static constexpr const char* kGroupNames[kNumGroups] = {
+        "kick", "snare", "tom1", "tom2", "tom3",
+        "crashL", "crashR", "china", "splash", "rideEdge", "rideCenter",
+        "hhClosed", "hhChoke", "hhOpen"
+    };
+
+    static int GroupIdx(const std::string& g)
+    {
+        for (int i = 0; i < kNumGroups; ++i)
+            if (g == kGroupNames[i]) return i;
+        return -1;
+    }
+
     struct DrumKit
     {
         struct Entry {
@@ -734,6 +749,7 @@ namespace {
             std::string path;
             std::string tag;
             std::string sampleGroup;     // группа семпла ("kick","snare","tom1",...,"hhOpen")
+            int varIdx = 0;              // 0 = variation 1, 1 = variation 2, …
             std::unique_ptr<AudioFile<SampleT>> file;
             std::unique_ptr<OneShotPlayer>      player;
             std::atomic<float> gain{ 1.0f };
@@ -765,10 +781,18 @@ namespace {
         void AddFromMemory(int note, const uint8_t* bytes, int length,
                            const char* tag, const char* group = nullptr)
         {
+            AddFromMemoryVar(note, bytes, length, tag, group, 0);
+        }
+
+        // Вариант с явным индексом вариации (0 = вариация 1, 1 = вариация 2, …)
+        void AddFromMemoryVar(int note, const uint8_t* bytes, int length,
+                              const char* tag, const char* group, int varIdx)
+        {
             auto e = std::make_unique<Entry>();
             e->note.store(note, std::memory_order_relaxed);
             e->tag = tag ? tag : "";
             e->sampleGroup = group ? group : "";
+            e->varIdx = varIdx;
             e->file = std::make_unique<AudioFile<SampleT>>();
             e->player = std::make_unique<OneShotPlayer>();
 
@@ -778,11 +802,17 @@ namespace {
             {
                 *(e->file) = std::move(tmp);
                 e->player->SetSample(*e->file);
+
+                const int gi = GroupIdx(e->sampleGroup);
+                if (gi >= 0 && varIdx + 1 > mVarCounts[gi])
+                    mVarCounts[gi] = varIdx + 1;
+
                 mEntries.push_back(std::move(e));
             }
             else
             {
-                DBGMSG("Failed to load sample from memory: %s\n", e->tag.c_str());
+                DBGMSG("Failed to load sample from memory: %s var%d\n",
+                       e->tag.c_str(), varIdx);
             }
         }
 
@@ -793,8 +823,14 @@ namespace {
         void Trigger(int note, float vel01)
         {
             for (auto& e : mEntries)
-                if (e->note.load(std::memory_order_relaxed) == note)
+            {
+                if (e->note.load(std::memory_order_relaxed) != note) continue;
+                const int gi = GroupIdx(e->sampleGroup);
+                const int activeVar = (gi >= 0)
+                    ? mActiveVar[gi].load(std::memory_order_relaxed) : 0;
+                if (e->varIdx == activeVar)
                     e->player->Trigger(vel01);
+            }
         }
 
         // Изменить MIDI-ноту для всех записей с данной группой (thread-safe с аудиопотоком)
@@ -849,16 +885,40 @@ namespace {
             return out;
         }
 
-        // ---- ДОБАВЛЕНО: сбросить набор (фикс "накапливающейся" громкости в DAW)
+        // Сбросить набор семплов; mActiveVar сохраняется (пользователь мог переключить вариацию)
         void Clear()
         {
             mEntries.clear();
+            for (int i = 0; i < kNumGroups; ++i) mVarCounts[i] = 0;
         }
 
         bool IsEmpty() const { return mEntries.empty(); }
 
+        // ── Variation API (thread-safe) ──────────────────────────────────────
+        void SetGroupVariation(const char* group, int var)
+        {
+            const int gi = GroupIdx(group ? group : "");
+            if (gi < 0) return;
+            const int clamped = std::clamp(var, 0, std::max(0, mVarCounts[gi] - 1));
+            mActiveVar[gi].store(clamped, std::memory_order_relaxed);
+        }
+
+        int GetGroupVariation(const char* group) const
+        {
+            const int gi = GroupIdx(group ? group : "");
+            return gi >= 0 ? mActiveVar[gi].load(std::memory_order_relaxed) : 0;
+        }
+
+        int GetGroupVariationCount(const char* group) const
+        {
+            const int gi = GroupIdx(group ? group : "");
+            return gi >= 0 ? std::max(1, mVarCounts[gi]) : 1;
+        }
+
     private:
         std::vector<std::unique_ptr<Entry>> mEntries;
+        std::atomic<int> mActiveVar[kNumGroups]{};  // активная вариация per-group (default 0)
+        int              mVarCounts[kNumGroups]{};  // сколько вариаций загружено per-group
     };
 
   
@@ -1206,6 +1266,25 @@ void TemplateProject::DeleteCustomPreset(int idx)
     SaveAllCustomPresets_(mCustomPresets);
 }
 
+// ── Variation API ──────────────────────────────────────────────────────────
+void TemplateProject::SetGroupVariation(const char* group, int varIdx)
+{
+    auto* kit = static_cast<DrumKit*>(mKitOpaque);
+    if (kit) kit->SetGroupVariation(group, varIdx);
+}
+
+int TemplateProject::GetGroupVariation(const char* group) const
+{
+    const auto* kit = static_cast<const DrumKit*>(mKitOpaque);
+    return kit ? kit->GetGroupVariation(group) : 0;
+}
+
+int TemplateProject::GetGroupVariationCount(const char* group) const
+{
+    const auto* kit = static_cast<const DrumKit*>(mKitOpaque);
+    return kit ? kit->GetGroupVariationCount(group) : 1;
+}
+
 void TemplateProject::ImportNoteMap(const char* path)
 {
     if (!path || !*path) return;
@@ -1440,63 +1519,108 @@ static bool LoadSndlibAndPopulateKit(DrumKit& kit, const char* fullPath, const D
     if (!fullPath || !*fullPath) return false;
 
     auto pack = LoadPackFromPath(fullPath);
-    if (!pack.ok)
-        return false;
+    if (!pack.ok) return false;
 
     kit.Clear();
 
-    // group — имя группы ("kick","snare",...) для SetNoteForGroup()
-    auto AddFromPackedHeader = [&](int note, const char* pathInPack, const char* tag, const char* group)
+    // Maps each base filename → (tag, group, note).
+    // Both variation 1 and variation 2 share the same base filename; only
+    // the path inside the sndlib differs (variation 2 lives under "variations/…/").
+    struct SlotDef { const char* baseName; const char* tag; const char* group; int note; };
+    const SlotDef kSlots[] = {
+        // CLOSE
+        {"Kick_Close.cpp",        "kick",          "kick",       nm.kick},
+        {"Snare_Close.cpp",       "snare_close",   "snare",      nm.snare},
+        {"RackTom1_Close.cpp",    "tom01_close",   "tom1",       nm.tom1},
+        {"RackTom2_Close.cpp",    "tom02_close",   "tom2",       nm.tom2},
+        {"FloorTom_Close.cpp",    "tom03_close",   "tom3",       nm.tom3},
+        {"CrashL_Close.cpp",      "crashL_close",  "crashL",     nm.crashL},
+        {"CrashR_Close.cpp",      "crashR_close",  "crashR",     nm.crashR},
+        {"China_Close.cpp",       "china_close",   "china",      nm.china},
+        {"Splash_Close.cpp",      "splash_close",  "splash",     nm.splash},
+        {"RideEdge_Close.cpp",    "ride_close",    "rideEdge",   nm.rideEdge},
+        {"RideCenter_Close.cpp",  "ride_close",    "rideCenter", nm.rideCenter},
+        {"HH_Closed_Close.cpp",   "hi-hat_close",  "hhClosed",   nm.hhClosed},
+        {"HH_Open_Close.cpp",     "hi-hat_close",  "hhOpen",     nm.hhOpen},
+        {"HH_Choked_Close.cpp",   "hi-hat_close",  "hhChoke",    nm.hhChoke},
+        // ROOM
+        {"Kick_Room.cpp",         "kick_room",     "kick",       nm.kick},
+        {"Snare_Room.cpp",        "snare_room",    "snare",      nm.snare},
+        {"RackTom1_Room.cpp",     "racktom1_room", "tom1",       nm.tom1},
+        {"RackTom2_Room.cpp",     "racktom2_room", "tom2",       nm.tom2},
+        {"FloorTom_Room.cpp",     "tom_room",      "tom3",       nm.tom3},
+        {"CrashL_Room.cpp",       "crashL_room",   "crashL",     nm.crashL},
+        {"CrashR_Room.cpp",       "crashR_room",   "crashR",     nm.crashR},
+        {"China_Room.cpp",        "china_room",    "china",      nm.china},
+        {"Splash_Room.cpp",       "splash_room",   "splash",     nm.splash},
+        {"RideEdge_Room.cpp",     "ride_room",     "rideEdge",   nm.rideEdge},
+        {"RideCenter_Room.cpp",   "ride_room",     "rideCenter", nm.rideCenter},
+        {"HH_Closed_Room.cpp",    "hihat_room",    "hhClosed",   nm.hhClosed},
+        {"HH_Open_Room.cpp",      "hihat_room",    "hhOpen",     nm.hhOpen},
+        {"HH_Choked_Room.cpp",    "hihat_room",    "hhChoke",    nm.hhChoke},
+    };
+    const int kNumSlots = (int)(sizeof(kSlots) / sizeof(kSlots[0]));
+
+    auto FindSlot = [&](const std::string& base) -> const SlotDef* {
+        for (int i = 0; i < kNumSlots; ++i)
+            if (base == kSlots[i].baseName) return &kSlots[i];
+        return nullptr;
+    };
+
+    auto IsValidWav = [](const std::vector<uint8_t>& b) {
+        return b.size() >= 12
+            && !memcmp(b.data(),     "RIFF", 4)
+            && !memcmp(b.data() + 8, "WAVE", 4);
+    };
+
+    // Single pass over all archive entries.
+    // Files at root level          → varIdx = 0  (variation 1)
+    // Files under "variations/…"   → varIdx = 1  (variation 2)
+    // "variations2/…"              → varIdx = 2  (variation 3, future)
+    const size_t total = pack.archive.Count();
+    for (size_t i = 0; i < total; ++i)
+    {
+        const SsdEntry& entry = pack.archive.ByIndex(i);
+
+        // Header files carry no audio data
+        if (entry.name.size() > 2 &&
+            entry.name.compare(entry.name.size() - 2, 2, ".h") == 0) continue;
+
+        // Determine variation index and stripped base filename
+        int varIdx = 0;
+        std::string baseName = entry.name;
+
+        if (entry.name.rfind("variations/", 0) == 0)        // "variations/…/Kick_Close.cpp"
         {
-            const SsdEntry* e = pack.archive.Find(pathInPack);
-            if (!e) { DBGMSG("Missing in pack: %s\n", pathInPack); return; }
+            varIdx = 1;
+            const auto slash = entry.name.rfind('/');
+            baseName = (slash != std::string::npos)
+                       ? entry.name.substr(slash + 1)
+                       : entry.name;
+        }
+        else if (entry.name.rfind("variations2/", 0) == 0)  // future 3rd variation
+        {
+            varIdx = 2;
+            const auto slash = entry.name.rfind('/');
+            baseName = (slash != std::string::npos)
+                       ? entry.name.substr(slash + 1)
+                       : entry.name;
+        }
 
-            std::vector<uint8_t> wavBytes;
-            if (!ExtractBin2CBytes(e->data.data(), e->data.size(), wavBytes)) {
-                DBGMSG("bin2c parse failed: %s\n", pathInPack); return;
-            }
+        const SlotDef* slot = FindSlot(baseName);
+        if (!slot) { DBGMSG("Unknown file in pack (skipped): %s\n", entry.name.c_str()); continue; }
 
-            if (!(wavBytes.size() >= 12 && !memcmp(wavBytes.data(), "RIFF", 4) && !memcmp(wavBytes.data() + 8, "WAVE", 4))) {
-                DBGMSG("not a RIFF/WAVE inside: %s\n", pathInPack); return;
-            }
+        std::vector<uint8_t> wavBytes;
+        if (!ExtractBin2CBytes(entry.data.data(), entry.data.size(), wavBytes)) {
+            DBGMSG("bin2c parse failed: %s\n", entry.name.c_str()); continue;
+        }
+        if (!IsValidWav(wavBytes)) {
+            DBGMSG("not RIFF/WAVE: %s\n", entry.name.c_str()); continue;
+        }
 
-            kit.AddFromMemory(note, wavBytes.data(), (int)wavBytes.size(), tag, group);
-        };
-
-    // CLOSE — ноты берём из noteMap (дефолты == kXxxNote)
-    AddFromPackedHeader(nm.kick,       "Kick_Close.cpp",     "kick",         "kick");
-    AddFromPackedHeader(nm.snare,      "Snare_Close.cpp",    "snare_close",  "snare");
-    AddFromPackedHeader(nm.tom1,       "RackTom1_Close.cpp", "tom01_close",  "tom1");
-    AddFromPackedHeader(nm.tom2,       "RackTom2_Close.cpp", "tom02_close",  "tom2");
-    AddFromPackedHeader(nm.tom3,       "FloorTom_Close.cpp", "tom03_close",  "tom3");
-    AddFromPackedHeader(nm.crashL,     "CrashL_Close.cpp",   "crashL_close", "crashL");
-    AddFromPackedHeader(nm.crashR,     "CrashR_Close.cpp",   "crashR_close", "crashR");
-    AddFromPackedHeader(nm.china,      "China_Close.cpp",    "china_close",  "china");
-    AddFromPackedHeader(nm.splash,     "Splash_Close.cpp",   "splash_close", "splash");
-    AddFromPackedHeader(nm.rideEdge,   "RideEdge_Close.cpp", "ride_close",   "rideEdge");
-    AddFromPackedHeader(nm.rideCenter, "RideCenter_Close.cpp","ride_close",  "rideCenter");
-
-    // ROOM
-    AddFromPackedHeader(nm.kick,       "Kick_Room.cpp",      "kick_room",     "kick");
-    AddFromPackedHeader(nm.snare,      "Snare_Room.cpp",     "snare_room",    "snare");
-    AddFromPackedHeader(nm.tom3,       "FloorTom_Room.cpp",  "tom_room",      "tom3");
-    AddFromPackedHeader(nm.tom1,       "RackTom1_Room.cpp",  "racktom1_room", "tom1");
-    AddFromPackedHeader(nm.tom2,       "RackTom2_Room.cpp",  "racktom2_room", "tom2");
-    AddFromPackedHeader(nm.crashL,     "CrashL_Room.cpp",    "crashL_room",   "crashL");
-    AddFromPackedHeader(nm.crashR,     "CrashR_Room.cpp",    "crashR_room",   "crashR");
-    AddFromPackedHeader(nm.china,      "China_Room.cpp",     "china_room",    "china");
-    AddFromPackedHeader(nm.splash,     "Splash_Room.cpp",    "splash_room",   "splash");
-    AddFromPackedHeader(nm.rideEdge,   "RideEdge_Room.cpp",  "ride_room",     "rideEdge");
-    AddFromPackedHeader(nm.rideCenter, "RideCenter_Room.cpp","ride_room",     "rideCenter");
-
-    // HI-HAT
-    AddFromPackedHeader(nm.hhClosed,   "HH_Closed_Close.cpp",  "hi-hat_close", "hhClosed");
-    AddFromPackedHeader(nm.hhOpen,     "HH_Open_Close.cpp",    "hi-hat_close", "hhOpen");
-    AddFromPackedHeader(nm.hhChoke,    "HH_Choked_Close.cpp",  "hi-hat_close", "hhChoke");
-
-    AddFromPackedHeader(nm.hhClosed,   "HH_Closed_Room.cpp",   "hihat_room",   "hhClosed");
-    AddFromPackedHeader(nm.hhOpen,     "HH_Open_Room.cpp",     "hihat_room",   "hhOpen");
-    AddFromPackedHeader(nm.hhChoke,    "HH_Choked_Room.cpp",   "hihat_room",   "hhChoke");
+        kit.AddFromMemoryVar(slot->note, wavBytes.data(), (int)wavBytes.size(),
+                             slot->tag, slot->group, varIdx);
+    }
 
     return true;
 }

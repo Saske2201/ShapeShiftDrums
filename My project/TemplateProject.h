@@ -343,6 +343,11 @@ public:
 	void DeleteCustomPreset(int idx);
 	void ImportNoteMap(const char* path);
 	void ExportNoteMap(const char* path);
+	// Variation API — group names: "kick","snare","tom1","tom2","tom3",
+	//   "crashL","crashR","china","splash","rideEdge","rideCenter","hhClosed","hhChoke","hhOpen"
+	void SetGroupVariation(const char* group, int varIdx);
+	int  GetGroupVariation(const char* group) const;
+	int  GetGroupVariationCount(const char* group) const;
 	int  GetCurrentPreset() const { return mCurrentPreset; }
 	int  GetCurrentCustomIdx() const { return mCurrentCustomIdx; }
 	int  GetCustomPresetCount() const { return (int)mCustomPresets.size(); }
