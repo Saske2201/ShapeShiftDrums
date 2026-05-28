@@ -30,3 +30,5 @@
 Makefile            text eol=lf
 .mk                 text eol=lf
 *.psd filter=lfs diff=lfs merge=lfs -text
+My[[:space:]]project/ShapeShiftDrums.sndlib filter=lfs diff=lfs merge=lfs -text
+*.sndlib filter=lfs diff=lfs merge=lfs -text
