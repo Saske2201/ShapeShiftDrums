@@ -822,12 +822,17 @@ namespace {
 
         void Trigger(int note, float vel01)
         {
+            // Pick a random variation for each group before scanning entries so that
+            // all entries in the same group (close + room) always use the same variation.
+            int chosenVar[kNumGroups];
+            for (int gi = 0; gi < kNumGroups; ++gi)
+                chosenVar[gi] = (mVarCounts[gi] > 1) ? (rand() % mVarCounts[gi]) : 0;
+
             for (auto& e : mEntries)
             {
                 if (e->note.load(std::memory_order_relaxed) != note) continue;
                 const int gi = GroupIdx(e->sampleGroup);
-                const int activeVar = (gi >= 0)
-                    ? mActiveVar[gi].load(std::memory_order_relaxed) : 0;
+                const int activeVar = (gi >= 0) ? chosenVar[gi] : 0;
                 if (e->varIdx == activeVar)
                     e->player->Trigger(vel01);
             }
@@ -885,7 +890,6 @@ namespace {
             return out;
         }
 
-        // Сбросить набор семплов; mActiveVar сохраняется (пользователь мог переключить вариацию)
         void Clear()
         {
             mEntries.clear();
@@ -893,21 +897,6 @@ namespace {
         }
 
         bool IsEmpty() const { return mEntries.empty(); }
-
-        // ── Variation API (thread-safe) ──────────────────────────────────────
-        void SetGroupVariation(const char* group, int var)
-        {
-            const int gi = GroupIdx(group ? group : "");
-            if (gi < 0) return;
-            const int clamped = std::clamp(var, 0, std::max(0, mVarCounts[gi] - 1));
-            mActiveVar[gi].store(clamped, std::memory_order_relaxed);
-        }
-
-        int GetGroupVariation(const char* group) const
-        {
-            const int gi = GroupIdx(group ? group : "");
-            return gi >= 0 ? mActiveVar[gi].load(std::memory_order_relaxed) : 0;
-        }
 
         int GetGroupVariationCount(const char* group) const
         {
@@ -917,8 +906,7 @@ namespace {
 
     private:
         std::vector<std::unique_ptr<Entry>> mEntries;
-        std::atomic<int> mActiveVar[kNumGroups]{};  // активная вариация per-group (default 0)
-        int              mVarCounts[kNumGroups]{};  // сколько вариаций загружено per-group
+        int mVarCounts[kNumGroups]{};  // сколько вариаций загружено per-group
     };
 
   
@@ -1264,19 +1252,6 @@ void TemplateProject::DeleteCustomPreset(int idx)
         mCurrentCustomIdx--;
     }
     SaveAllCustomPresets_(mCustomPresets);
-}
-
-// ── Variation API ──────────────────────────────────────────────────────────
-void TemplateProject::SetGroupVariation(const char* group, int varIdx)
-{
-    auto* kit = static_cast<DrumKit*>(mKitOpaque);
-    if (kit) kit->SetGroupVariation(group, varIdx);
-}
-
-int TemplateProject::GetGroupVariation(const char* group) const
-{
-    const auto* kit = static_cast<const DrumKit*>(mKitOpaque);
-    return kit ? kit->GetGroupVariation(group) : 0;
 }
 
 int TemplateProject::GetGroupVariationCount(const char* group) const
