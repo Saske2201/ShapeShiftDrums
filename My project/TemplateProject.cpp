@@ -2771,28 +2771,9 @@ public:
         SetDirty(false);
         if (!GetUI()) return;
 
-        // RMB: per-preset sub-menu (Rename / Delete) + Save as Custom
-        if (mod.R)
-        {
-            IPopupMenu menu;
-            menu.AddItem(new IPopupMenu::Item("Custom Presets", IPopupMenu::Item::kTitle, -1));
-            menu.AddSeparator();
-            const int n = mPlug.GetCustomPresetCount();
-            for (int i = 0; i < n; i++)
-            {
-                const std::string nm = mPlug.GetCustomPresetName(i);
-                IPopupMenu* sub = new IPopupMenu();
-                sub->AddItem(new IPopupMenu::Item("Rename...", IPopupMenu::Item::kNoFlags, 2000 + i));
-                sub->AddItem(new IPopupMenu::Item("Delete",    IPopupMenu::Item::kNoFlags, 3000 + i));
-                menu.AddItem(nm.c_str(), sub);
-            }
-            if (n > 0) menu.AddSeparator();
-            menu.AddItem(new IPopupMenu::Item("Save as Custom...", IPopupMenu::Item::kNoFlags, 999));
-            GetUI()->CreatePopupMenu(*this, menu, mRECT);
-            return;
-        }
-
-        // LMB: selection popup
+        // Single popup for both LMB and RMB.
+        // Built-in presets: click to apply.
+        // Custom presets: sub-menu with Apply / Rename... / Delete.
         IPopupMenu menu;
         const int curPreset = mPlug.GetCurrentPreset();
         const int curCustom = mPlug.GetCurrentCustomIdx();
@@ -2813,8 +2794,13 @@ public:
             for (int i = 0; i < n; i++)
             {
                 const bool active = (curPreset == 100 && curCustom == i);
-                auto flags = active ? IPopupMenu::Item::kChecked : IPopupMenu::Item::kNoFlags;
-                menu.AddItem(new IPopupMenu::Item(mPlug.GetCustomPresetName(i).c_str(), flags, 1000 + i));
+                IPopupMenu* sub = new IPopupMenu();
+                auto applyFlags = active ? IPopupMenu::Item::kChecked : IPopupMenu::Item::kNoFlags;
+                sub->AddItem(new IPopupMenu::Item("Apply",     applyFlags,                  1000 + i));
+                sub->AddSeparator();
+                sub->AddItem(new IPopupMenu::Item("Rename...", IPopupMenu::Item::kNoFlags,  2000 + i));
+                sub->AddItem(new IPopupMenu::Item("Delete",    IPopupMenu::Item::kNoFlags,  3000 + i));
+                menu.AddItem(mPlug.GetCustomPresetName(i).c_str(), sub);
             }
         }
         menu.AddSeparator();
