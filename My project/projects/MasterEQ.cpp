@@ -105,38 +105,43 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 
 // ---------------------------------------------------------------------------------------------------- ОСНОВНАЯ МЕХАНИКА --------------------------------------------------------------
 
-// 4-band master bus EQ:
-//   mLS — sub/body low shelf        (Tone Low character, wide)
-//   mLO — mid-body bell @ 300 Hz    (kick density/thickness, fills 200-600 Hz)
-//   mHI — presence bell @ 4 kHz     (Tube Warm attack/bite above 2 kHz)
-//   mHS — air high shelf @ 6 kHz    (open top-end, extends perceived high content)
+// 4-band "tone" EQ — warmth + smooth high rolloff (Tube Warm character):
+//   mLS — sub/body low shelf  @ 90 Hz     wide boost, adds weight
+//   mLO — mid-body bell       @ 300 Hz    kick density, fills 200-600 Hz
+//   mHI — presence high shelf @ 3 kHz     lifts 3kHz+ uniformly, smooth plateau
+//   mHS — tube rolloff        @ 10 kHz    gentle cut that rounds off the top like a tube stage
+//
+// mHI + mHS combined: +4.5 dB flat from 3-10 kHz, then tapers off above 10 kHz.
+// This matches the smooth "organic" high-end shape of Tube Warm saturation.
 void MasterEQ::Recalc()
 {
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
-    // Sub/body — low shelf, wide slope so it wraps up to ~150 Hz as one hump
+    // Sub/body — low shelf, wide enough to form one cohesive low hump
     const double lsDB = 5.5 * t;
     const double lsHz = 90.0;
     const double lsS  = 0.65;
 
-    // Mid-body — bell: fills the 200-500 Hz "density" range
+    // Mid-body — bell: adds kick density in the 200-600 Hz range
     const double loDB = 2.5 * t;
     const double loHz = 300.0;
     const double loQ  = 0.85;
 
-    // Presence — wide bell centred at 4 kHz, covers 2-8 kHz attack content
-    const double hiDB = 4.0 * t;
-    const double hiHz = 4000.0;
-    const double hiQ  = 0.60;
+    // Presence shelf — lifts 3 kHz and above as a single wide shelf (not a bell)
+    // Creates the broad presence plateau seen in the reference
+    const double hiDB = 4.5 * t;
+    const double hiHz = 3000.0;
+    const double hiS  = 0.65;
 
-    // Air — high shelf from 6 kHz: extends perceived top-end envelope
-    const double hsDB = 3.5 * t;
-    const double hsHz = 6000.0;
-    const double hsS  = 0.70;
+    // Tube rolloff — gentle high-shelf CUT from 10 kHz: rounds off the very top
+    // Simulates the natural high-frequency softening of a tube stage
+    const double hsDB = -3.0 * t;
+    const double hsHz = 10000.0;
+    const double hsS  = 0.80;
 
     mLS.SetLowShelf (mSR, lsHz, lsDB, lsS);
     mLO.SetPeaking  (mSR, loHz, loDB, loQ);
-    mHI.SetPeaking  (mSR, hiHz, hiDB, hiQ);
+    mHI.SetHighShelf(mSR, hiHz, hiDB, hiS);
     mHS.SetHighShelf(mSR, hsHz, hsDB, hsS);
 }
 
