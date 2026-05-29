@@ -126,51 +126,53 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 
 // ---------------------------------------------------------------------------------------------------- ОСНОВНАЯ МЕХАНИКА --------------------------------------------------------------
 
-// 4-band "tone" EQ — warmth + smooth high rolloff (Tube Warm character):
-//   mLS — sub/body low shelf  @ 90 Hz     wide boost, adds weight
-//   mLO — mid-body bell       @ 300 Hz    kick density, fills 200-600 Hz
-//   mHI — presence high shelf @ 3 kHz     lifts 3kHz+ uniformly, smooth plateau
-//   mHS — tube rolloff        @ 10 kHz    gentle cut that rounds off the top like a tube stage
+// Target: JST Andrew Wade "Tone Low" ~80% + Saturn 2 "Tube Warm" from 2kHz ~80%
 //
-// mHI + mHS combined: +4.5 dB flat from 3-10 kHz, then tapers off above 10 kHz.
-// This matches the smooth "organic" high-end shape of Tube Warm saturation.
+// Desired spectrum shape: strong hump 50-200 Hz, natural declining mid-range,
+// gentle tube-harmonic extension 2-5 kHz, smooth rolloff above 9 kHz, clean cut at ~15.8 kHz.
+//
+// The wide presence SHELF was removed — it lifted mids/highs to the same level as lows,
+// creating a flat spectrum instead of the natural declining drum shape.
+//
+//   mLS  low shelf    +5.5 dB @  80 Hz  S=0.70   kick body/sub (Tone Low)
+//   mLO  bell         +2.0 dB @ 250 Hz  Q=1.20   low-body warmth (Tone Low body)
+//   mHI  bell         +2.0 dB @3500 Hz  Q=0.60   tube harmonic extension (Tube Warm 2k+)
+//   mHS  hi-shelf cut -3.5 dB @9000 Hz  S=0.75   smooth top rounding (Tube Warm)
+//   mHC  48 dB/oct LPF        @15811 Hz           clean cut
 void MasterEQ::Recalc()
 {
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
-    // Sub/body — low shelf, wide enough to form one cohesive low hump
-    const double lsDB = 6.0 * t;
-    const double lsHz = 90.0;
-    const double lsS  = 0.65;
+    // Sub/body low shelf — Tone Low character
+    const double lsDB = 5.5 * t;
+    const double lsHz = 80.0;
+    const double lsS  = 0.70;
 
-    // Mid-body — bell: adds kick density / warmth in the 200-600 Hz range
-    const double loDB = 3.5 * t;
-    const double loHz = 300.0;
-    const double loQ  = 0.85;
+    // Low-body warmth bell — density without lifting mids
+    const double loDB = 2.0 * t;
+    const double loHz = 250.0;
+    const double loQ  = 1.20;
 
-    // Presence shelf — lifts 3 kHz and above as a single wide shelf (not a bell)
-    // Creates the broad presence plateau seen in the reference
-    const double hiDB = 4.5 * t;
-    const double hiHz = 3000.0;
-    const double hiS  = 0.65;
+    // Tube Warm bell — gentle harmonic extension 2-5 kHz (NOT a shelf)
+    const double hiDB = 2.0 * t;
+    const double hiHz = 3500.0;
+    const double hiQ  = 0.60;
 
-    // Tube rolloff — gentle high-shelf CUT from 10 kHz: rounds off the very top
-    // Simulates the natural high-frequency softening of a tube stage
-    const double hsDB = -3.0 * t;
-    const double hsHz = 10000.0;
-    const double hsS  = 0.80;
+    // Top-end rounding — smooth tube-style high rolloff
+    const double hsDB = -3.5 * t;
+    const double hsHz = 9000.0;
+    const double hsS  = 0.75;
 
     mLS.SetLowShelf (mSR, lsHz, lsDB, lsS);
     mLO.SetPeaking  (mSR, loHz, loDB, loQ);
-    mHI.SetHighShelf(mSR, hiHz, hiDB, hiS);
+    mHI.SetPeaking  (mSR, hiHz, hiDB, hiQ);
     mHS.SetHighShelf(mSR, hsHz, hsDB, hsS);
 
-    // Makeup gain: compensate ~3.5 dB perceived loudness increase from the EQ boosts
-    mMakeupGain = std::pow(10.0, (-3.5 * t) / 20.0);
+    // Makeup gain: -2.5 dB at t=1 compensates perceived loudness increase
+    mMakeupGain = std::pow(10.0, (-2.5 * t) / 20.0);
 
     // 48 dB/oct Butterworth high-cut: 4 cascaded LPF biquads
     // Cutoff slides from 20 kHz (t=0, inaudible) to 15811 Hz (t=1)
-    // Butterworth 8th-order pole Q values: 0.5098, 0.6013, 0.9001, 2.5629
     const double hcHz = std::exp(std::log(20000.0) + t * std::log(15811.0 / 20000.0));
     mHC1.SetLowPass(mSR, hcHz, 0.5098);
     mHC2.SetLowPass(mSR, hcHz, 0.6013);
