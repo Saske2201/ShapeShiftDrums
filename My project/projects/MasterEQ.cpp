@@ -106,27 +106,29 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 // ---------------------------------------------------------------------------------------------------- ОСНОВНАЯ МЕХАНИКА --------------------------------------------------------------
 
 // Low  band: approximates JST Andrew Wade "Tone Low" ~80%
-//            → low-shelf body boost around 100 Hz
+//            → low-shelf body boost anchored at 80 Hz (sub/punch)
 // High band: approximates FabFilter Saturn 2 "Tube Warm" from 2 kHz ~80%
-//            → presence peak at 3.2 kHz + gentle air shelf at 8 kHz
-//            (tube harmonic character rendered as linear EQ shaping)
+//            → wide presence peak at 4 kHz + air shelf at 10 kHz
+//            (tube harmonic character rendered as linear EQ shaping;
+//             actual saturation harmonics are not replicable with linear EQ,
+//             so presence gain is intentionally higher to compensate)
 void MasterEQ::Recalc()
 {
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
-    // Low shelf: body/weight — Tone Low ~80%
-    const double lsDB = 5.0 * t;
-    const double lsHz = 100.0;
-    const double lsS  = 0.8;
+    // Low shelf: sub/body weight — Tone Low ~80%
+    const double lsDB = 6.0 * t;
+    const double lsHz = 80.0;
+    const double lsS  = 0.7;    // wide/gentle slope
 
-    // Presence peak: Tube Warm energy concentration above 2kHz
-    const double mdDB = 3.5 * t;
-    const double mdHz = 3200.0;
-    const double mdQ  = 0.70;
+    // Presence peak: Tube Warm harmonic energy above 2kHz, centred at 4kHz
+    const double mdDB = 4.5 * t;
+    const double mdHz = 4000.0;
+    const double mdQ  = 0.60;   // wide bell, covers 2-8kHz
 
-    // Air shelf: smooth high-end open feel (Tube Warm @ 8kHz)
-    const double hsDB = 1.5 * t;
-    const double hsHz = 8000.0;
+    // Air shelf: open top-end (Tube Warm brightness character)
+    const double hsDB = 3.0 * t;
+    const double hsHz = 10000.0;
     const double hsS  = 0.75;
 
     mLS.SetLowShelf (mSR, lsHz, lsDB, lsS);
