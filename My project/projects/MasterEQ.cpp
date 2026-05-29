@@ -99,40 +99,44 @@ void MasterEQ::Biquad::SetHighShelf(double fs, double f0, double dB, double Q) {
 void MasterEQ::Biquad::SetPeaking(double fs, double f0, double dB, double Q) { CookPeaking(fs, f0, dB, Q, b0, b1, b2, a1, a2); }
 
 void MasterEQ::Prepare(double sr) { mSR = (sr > 0.0 ? sr : 44100.0); Recalc(); Reset(); }
-void MasterEQ::Reset() { mLS.Reset(); mMID.Reset(); mHS.Reset(); }
+void MasterEQ::Reset() { mLS.Reset(); mLO.Reset(); mHI.Reset(); mHS.Reset(); }
 void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); Recalc(); }
 
 
 // ---------------------------------------------------------------------------------------------------- ОСНОВНАЯ МЕХАНИКА --------------------------------------------------------------
 
-// Low  band: approximates JST Andrew Wade "Tone Low" ~80%
-//            → low-shelf body boost anchored at 80 Hz (sub/punch)
-// High band: approximates FabFilter Saturn 2 "Tube Warm" from 2 kHz ~80%
-//            → wide presence peak at 4 kHz + air shelf at 10 kHz
-//            (tube harmonic character rendered as linear EQ shaping;
-//             actual saturation harmonics are not replicable with linear EQ,
-//             so presence gain is intentionally higher to compensate)
+// 4-band master bus EQ:
+//   mLS — sub/body low shelf        (Tone Low character, wide)
+//   mLO — mid-body bell @ 300 Hz    (kick density/thickness, fills 200-600 Hz)
+//   mHI — presence bell @ 4 kHz     (Tube Warm attack/bite above 2 kHz)
+//   mHS — air high shelf @ 6 kHz    (open top-end, extends perceived high content)
 void MasterEQ::Recalc()
 {
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
-    // Low shelf: sub/body weight — Tone Low ~80%
-    const double lsDB = 6.0 * t;
-    const double lsHz = 80.0;
-    const double lsS  = 0.7;    // wide/gentle slope
+    // Sub/body — low shelf, wide slope so it wraps up to ~150 Hz as one hump
+    const double lsDB = 5.5 * t;
+    const double lsHz = 90.0;
+    const double lsS  = 0.65;
 
-    // Presence peak: Tube Warm harmonic energy above 2kHz, centred at 4kHz
-    const double mdDB = 4.5 * t;
-    const double mdHz = 4000.0;
-    const double mdQ  = 0.60;   // wide bell, covers 2-8kHz
+    // Mid-body — bell: fills the 200-500 Hz "density" range
+    const double loDB = 2.5 * t;
+    const double loHz = 300.0;
+    const double loQ  = 0.85;
 
-    // Air shelf: open top-end (Tube Warm brightness character)
-    const double hsDB = 3.0 * t;
-    const double hsHz = 10000.0;
-    const double hsS  = 0.75;
+    // Presence — wide bell centred at 4 kHz, covers 2-8 kHz attack content
+    const double hiDB = 4.0 * t;
+    const double hiHz = 4000.0;
+    const double hiQ  = 0.60;
+
+    // Air — high shelf from 6 kHz: extends perceived top-end envelope
+    const double hsDB = 3.5 * t;
+    const double hsHz = 6000.0;
+    const double hsS  = 0.70;
 
     mLS.SetLowShelf (mSR, lsHz, lsDB, lsS);
-    mMID.SetPeaking (mSR, mdHz, mdDB, mdQ);
+    mLO.SetPeaking  (mSR, loHz, loDB, loQ);
+    mHI.SetPeaking  (mSR, hiHz, hiDB, hiQ);
     mHS.SetHighShelf(mSR, hsHz, hsDB, hsS);
 }
 
@@ -160,7 +164,8 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
 {
     if (!L || !R || nSamples <= 0) return;
     mLS.Process(L, R, nSamples);
-    mMID.Process(L, R, nSamples);
+    mLO.Process(L, R, nSamples);
+    mHI.Process(L, R, nSamples);
     mHS.Process(L, R, nSamples);
 }
 
