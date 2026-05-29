@@ -105,23 +105,33 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 
 // ---------------------------------------------------------------------------------------------------- ОСНОВНАЯ МЕХАНИКА --------------------------------------------------------------
 
-// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< ВАЖНО: заметная коррекция >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+// Low  band: approximates JST Andrew Wade "Tone Low" ~80%
+//            → low-shelf body boost around 100 Hz
+// High band: approximates FabFilter Saturn 2 "Tube Warm" from 2 kHz ~80%
+//            → presence peak at 3.2 kHz + gentle air shelf at 8 kHz
+//            (tube harmonic character rendered as linear EQ shaping)
 void MasterEQ::Recalc()
 {
-    // mAmt: 0 -> байпас, 1 -> жестко режем верх
     const double t = std::clamp(mAmt, 0.0, 1.0);
-    const double ls = 0.0;           // низ не трогаем
-    const double md = -6.0 * t;      // легкая «муть» в районе 1.5 кГц при больших значениях
-    const double hs = +24.0 * t;     // СИЛЬНЫЙ high-shelf cut — это сразу слышно
 
-    // частоты
-    const double lsHZ = 120.0;     
-    const double mdHZ = 1500.0;     
-    const double hsHZ = 6000.0;     
+    // Low shelf: body/weight — Tone Low ~80%
+    const double lsDB = 5.0 * t;
+    const double lsHz = 100.0;
+    const double lsS  = 0.8;
 
-    mLS.SetLowShelf(mSR, lsHZ, ls, 1.0);    //  Четвертый параметр - slope. Меньше Q (0.5–0.8) - полоса широкая, мягкая коррекция. Больше Q(1.2–2.0 + ) - полоса узкая, «хирургическая».
-    mMID.SetPeaking(mSR, mdHZ, md, 0.8);
-    mHS.SetHighShelf(mSR, hsHZ, hs, 0.9);
+    // Presence peak: Tube Warm energy concentration above 2kHz
+    const double mdDB = 3.5 * t;
+    const double mdHz = 3200.0;
+    const double mdQ  = 0.70;
+
+    // Air shelf: smooth high-end open feel (Tube Warm @ 8kHz)
+    const double hsDB = 1.5 * t;
+    const double hsHz = 8000.0;
+    const double hsS  = 0.75;
+
+    mLS.SetLowShelf (mSR, lsHz, lsDB, lsS);
+    mMID.SetPeaking (mSR, mdHz, mdDB, mdQ);
+    mHS.SetHighShelf(mSR, hsHz, hsDB, hsS);
 }
 
 // --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
