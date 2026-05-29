@@ -24,6 +24,7 @@ private:
         void SetLowShelf(double fs, double f0, double dB, double Q);
         void SetHighShelf(double fs, double f0, double dB, double Q);
         void SetPeaking(double fs, double f0, double dB, double Q);
+        void SetLowPass(double fs, double f0, double Q);
 
         template<class T>
         void Process(T* L, T* R, int n);
@@ -33,7 +34,8 @@ private:
 
     double mSR = 44100.0;
     double mAmt = 0.5;
-    Biquad mLS, mLO, mHI, mHS;   // sub shelf | body bell | presence bell | air shelf
+    Biquad mLS, mLO, mHI, mHS;      // sub shelf | body bell | presence shelf | tube rolloff
+    Biquad mHC1, mHC2, mHC3, mHC4; // 48 dB/oct Butterworth high-cut (4 cascaded LPF stages)
 };
 
 // ����� ���������������, ����� ����������� � iPlug sample=float/double

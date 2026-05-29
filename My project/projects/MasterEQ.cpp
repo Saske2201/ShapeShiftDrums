@@ -64,6 +64,26 @@ namespace {
         a1 = a1n / a0; a2 = a2n / a0;
     }
 
+    // RBJ: 2nd-order low-pass (used for Butterworth high-cut stages)
+    inline void CookLowPass(double fs, double f0, double Q,
+        double& b0, double& b1, double& b2, double& a1, double& a2)
+    {
+        f0 = clampHz(f0, fs);
+        Q  = std::max(1e-4, Q);
+
+        const double w0    = 2.0 * kPI * (f0 / fs);
+        const double cw    = std::cos(w0);
+        const double sw    = std::sin(w0);
+        const double alpha = sw / (2.0 * Q);
+        const double a0    = 1.0 + alpha;
+
+        b0 = (1.0 - cw) * 0.5 / a0;
+        b1 = (1.0 - cw)       / a0;
+        b2 = (1.0 - cw) * 0.5 / a0;
+        a1 = -2.0 * cw         / a0;
+        a2 = (1.0 - alpha)     / a0;
+    }
+
     // RBJ: high shelf (S — slope)
     inline void CookHighShelf(double fs, double f0, double dB, double S,
         double& b0, double& b1, double& b2, double& a1, double& a2)
@@ -97,9 +117,10 @@ void MasterEQ::Biquad::Reset() { z1L = z2L = z1R = z2R = 0.0; }
 void MasterEQ::Biquad::SetLowShelf(double fs, double f0, double dB, double Q) { CookLowShelf(fs, f0, dB, Q, b0, b1, b2, a1, a2); }
 void MasterEQ::Biquad::SetHighShelf(double fs, double f0, double dB, double Q) { CookHighShelf(fs, f0, dB, Q, b0, b1, b2, a1, a2); }
 void MasterEQ::Biquad::SetPeaking(double fs, double f0, double dB, double Q) { CookPeaking(fs, f0, dB, Q, b0, b1, b2, a1, a2); }
+void MasterEQ::Biquad::SetLowPass(double fs, double f0, double Q) { CookLowPass(fs, f0, Q, b0, b1, b2, a1, a2); }
 
 void MasterEQ::Prepare(double sr) { mSR = (sr > 0.0 ? sr : 44100.0); Recalc(); Reset(); }
-void MasterEQ::Reset() { mLS.Reset(); mLO.Reset(); mHI.Reset(); mHS.Reset(); }
+void MasterEQ::Reset() { mLS.Reset(); mLO.Reset(); mHI.Reset(); mHS.Reset(); mHC1.Reset(); mHC2.Reset(); mHC3.Reset(); mHC4.Reset(); }
 void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); Recalc(); }
 
 
@@ -143,6 +164,15 @@ void MasterEQ::Recalc()
     mLO.SetPeaking  (mSR, loHz, loDB, loQ);
     mHI.SetHighShelf(mSR, hiHz, hiDB, hiS);
     mHS.SetHighShelf(mSR, hsHz, hsDB, hsS);
+
+    // 48 dB/oct Butterworth high-cut: 4 cascaded LPF biquads
+    // Cutoff slides from 20 kHz (t=0, inaudible) to 15811 Hz (t=1)
+    // Butterworth 8th-order pole Q values: 0.5098, 0.6013, 0.9001, 2.5629
+    const double hcHz = std::exp(std::log(20000.0) + t * std::log(15811.0 / 20000.0));
+    mHC1.SetLowPass(mSR, hcHz, 0.5098);
+    mHC2.SetLowPass(mSR, hcHz, 0.6013);
+    mHC3.SetLowPass(mSR, hcHz, 0.9001);
+    mHC4.SetLowPass(mSR, hcHz, 2.5629);
 }
 
 // --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -172,6 +202,10 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
     mLO.Process(L, R, nSamples);
     mHI.Process(L, R, nSamples);
     mHS.Process(L, R, nSamples);
+    mHC1.Process(L, R, nSamples);
+    mHC2.Process(L, R, nSamples);
+    mHC3.Process(L, R, nSamples);
+    mHC4.Process(L, R, nSamples);
 }
 
 // явные инстансирования
