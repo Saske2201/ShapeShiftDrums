@@ -139,12 +139,12 @@ void MasterEQ::Recalc()
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
     // Sub/body — low shelf, wide enough to form one cohesive low hump
-    const double lsDB = 5.5 * t;
+    const double lsDB = 6.0 * t;
     const double lsHz = 90.0;
     const double lsS  = 0.65;
 
-    // Mid-body — bell: adds kick density in the 200-600 Hz range
-    const double loDB = 2.5 * t;
+    // Mid-body — bell: adds kick density / warmth in the 200-600 Hz range
+    const double loDB = 3.5 * t;
     const double loHz = 300.0;
     const double loQ  = 0.85;
 
@@ -164,6 +164,9 @@ void MasterEQ::Recalc()
     mLO.SetPeaking  (mSR, loHz, loDB, loQ);
     mHI.SetHighShelf(mSR, hiHz, hiDB, hiS);
     mHS.SetHighShelf(mSR, hsHz, hsDB, hsS);
+
+    // Makeup gain: compensate ~3.5 dB perceived loudness increase from the EQ boosts
+    mMakeupGain = std::pow(10.0, (-3.5 * t) / 20.0);
 
     // 48 dB/oct Butterworth high-cut: 4 cascaded LPF biquads
     // Cutoff slides from 20 kHz (t=0, inaudible) to 15811 Hz (t=1)
@@ -206,6 +209,8 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
     mHC2.Process(L, R, nSamples);
     mHC3.Process(L, R, nSamples);
     mHC4.Process(L, R, nSamples);
+    const T g = (T)mMakeupGain;
+    for (int i = 0; i < nSamples; ++i) { L[i] *= g; R[i] *= g; }
 }
 
 // явные инстансирования

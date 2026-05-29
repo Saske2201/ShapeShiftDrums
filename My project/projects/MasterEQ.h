@@ -34,6 +34,7 @@ private:
 
     double mSR = 44100.0;
     double mAmt = 0.5;
+    double mMakeupGain = 1.0;        // compensates loudness increase from EQ boosts
     Biquad mLS, mLO, mHI, mHS;      // sub shelf | body bell | presence shelf | tube rolloff
     Biquad mHC1, mHC2, mHC3, mHC4; // 48 dB/oct Butterworth high-cut (4 cascaded LPF stages)
 };
