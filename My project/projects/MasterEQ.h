@@ -18,33 +18,23 @@ private:
         double z1L = 0, z2L = 0, z1R = 0, z2R = 0;
 
         void Reset();
-        void SetLowShelf (double fs, double f0, double dB, double S);
-        void SetHighShelf(double fs, double f0, double dB, double S);
-        void SetPeaking  (double fs, double f0, double dB, double Q);
-        void SetLowPass  (double fs, double f0, double Q);
-        void ProcessMonoD(double* buf, int n);   // mono double-precision (uses z1L/z2L state)
+        void SetLowPass(double fs, double f0, double Q);
+        void ProcessMonoD(double* buf, int n);
 
         template<class T>
-        void Process(T* L, T* R, int n);         // stereo, used only for HC chain
+        void Process(T* L, T* R, int n);
     };
 
     void Recalc();
 
-    double mSR = 44100.0;
+    double mSR  = 44100.0;
     double mAmt = 0.5;
-    double mMakeupGain = 1.0;
-
-    // Mid channel EQ  (central image: kick, snare body — mono)
-    Biquad mMLS, mMLO, mMHI, mMHS;
-    // Side channel EQ (stereo width: hi-hats, room stereo spread)
-    Biquad mSLS, mSLO, mSHI, mSHS;
-    // High-cut: 48 dB/oct Butterworth applied to both channels after M/S decode
-    Biquad mHC1, mHC2, mHC3, mHC4;
 
     // 2 kHz crossover LPs for band-split saturation (M and S independent state)
     Biquad mMXO, mSXO;
+    // 48 dB/oct Butterworth HC — rolls off saturation artefacts near Nyquist
+    Biquad mHC1, mHC2, mHC3, mHC4;
 
-    // Soft saturation wet amounts (0..1) for M/S high-band (above 2 kHz)
     double mSatWetMid  = 0.0;
     double mSatWetSide = 0.0;
 };
