@@ -54,34 +54,20 @@ void MasterEQ::Prepare(double sr) { mSR = (sr > 0.0 ? sr : 44100.0); Recalc(); R
 
 void MasterEQ::Reset()
 {
-    mMXO.Reset(); mSXO.Reset();
     mHC1.Reset(); mHC2.Reset(); mHC3.Reset(); mHC4.Reset();
 }
 
 void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); Recalc(); }
 
-// -------- Recalc --------
-//
-// Signal chain per block:
-//   1. L/R → M/S encode
-//   2. Band-split tube saturation: LP crossover at 2 kHz
-//        below 2 kHz  passes untouched
-//        above 2 kHz  → TubeWarm() asymmetric tanh, drive=0.8 (≈Saturn 2 Tube Warm 80%)
-//      Mid:  wet=25% @ t=1
-//      Side: wet=15% @ t=1
-//   3. M/S → L/R decode
-//   4. 48 dB/oct Butterworth HC (~15811 Hz at t=1) rolls off saturation artefacts
-//
 void MasterEQ::Recalc()
 {
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
-    mSatWetMid  = t * 0.25;
-    mSatWetSide = t * 0.15;
+    // Full-band tube saturation wet amounts — high enough to be clearly audible
+    mSatWetMid  = t * 0.50;   // mid channel: strong tube coloring on kick/snare
+    mSatWetSide = t * 0.30;   // side channel: lighter, preserves stereo
 
-    mMXO.SetLowPass(mSR, 2000.0, 0.7071);
-    mSXO.SetLowPass(mSR, 2000.0, 0.7071);
-
+    // HC cutoff slides 20kHz (t=0) → 15811 Hz (t=1)
     const double hcHz = std::exp(std::log(20000.0) + t*std::log(15811.0/20000.0));
     mHC1.SetLowPass(mSR, hcHz, 0.5098);
     mHC2.SetLowPass(mSR, hcHz, 0.6013);
@@ -110,8 +96,8 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
 {
     if (!L || !R || nSamples <= 0) return;
 
-    thread_local std::vector<double> mBuf, sBuf, xBuf;
-    if ((int)mBuf.size() < nSamples) { mBuf.resize(nSamples); sBuf.resize(nSamples); xBuf.resize(nSamples); }
+    thread_local std::vector<double> mBuf, sBuf;
+    if ((int)mBuf.size() < nSamples) { mBuf.resize(nSamples); sBuf.resize(nSamples); }
 
     // L/R → M/S encode
     constexpr double kRt2 = 1.0 / 1.41421356237309504880;
@@ -120,25 +106,16 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
         sBuf[i] = ((double)L[i] - (double)R[i]) * kRt2;
     }
 
-    // Tube Warm saturation above 2 kHz (Saturn 2: band 1 xover @ 2kHz, drive 80%)
-    // Below 2 kHz passes untouched; LP + complement sum = flat at wet=0.
+    // Full-band tube saturation on M and S independently
     if (mSatWetMid > 1e-9) {
-        std::copy(mBuf.data(), mBuf.data() + nSamples, xBuf.data());
-        mMXO.ProcessMonoD(xBuf.data(), nSamples);
         const double wm = mSatWetMid;
-        for (int i = 0; i < nSamples; ++i) {
-            const double hi = mBuf[i] - xBuf[i];
-            mBuf[i] = xBuf[i] + TubeWarm(hi, wm, 0.8);
-        }
+        for (int i = 0; i < nSamples; ++i)
+            mBuf[i] = TubeWarm(mBuf[i], wm, 0.8);
     }
     if (mSatWetSide > 1e-9) {
-        std::copy(sBuf.data(), sBuf.data() + nSamples, xBuf.data());
-        mSXO.ProcessMonoD(xBuf.data(), nSamples);
         const double ws = mSatWetSide;
-        for (int i = 0; i < nSamples; ++i) {
-            const double hi = sBuf[i] - xBuf[i];
-            sBuf[i] = xBuf[i] + TubeWarm(hi, ws, 0.8);
-        }
+        for (int i = 0; i < nSamples; ++i)
+            sBuf[i] = TubeWarm(sBuf[i], ws, 0.6);
     }
 
     // M/S → L/R decode
@@ -147,7 +124,7 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
         R[i] = (T)((mBuf[i] - sBuf[i]) * kRt2);
     }
 
-    // 48 dB/oct Butterworth HC — rolls off saturation artefacts near Nyquist
+    // 48 dB/oct HC — rolls off saturation artefacts near Nyquist
     mHC1.Process(L, R, nSamples);
     mHC2.Process(L, R, nSamples);
     mHC3.Process(L, R, nSamples);

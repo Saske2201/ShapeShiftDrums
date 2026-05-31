@@ -30,8 +30,6 @@ private:
     double mSR  = 44100.0;
     double mAmt = 0.5;
 
-    // 2 kHz crossover LPs for band-split saturation (M and S independent state)
-    Biquad mMXO, mSXO;
     // 48 dB/oct Butterworth HC — rolls off saturation artefacts near Nyquist
     Biquad mHC1, mHC2, mHC3, mHC4;
 
