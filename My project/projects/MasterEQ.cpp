@@ -60,11 +60,15 @@ namespace {
         a2=((A+1.0)-(A-1.0)*cw-sqA*alpha)/a0;
     }
 
-    // Soft-knee waveshaper: tanh with input drive, blended wet/dry.
-    // Unity gain for small signals; soft-clips peaks; adds harmonic richness.
-    // drive controls harmonic "colour": higher = more 3rd-harmonic grit.
-    inline double SoftSat(double x, double wet, double drive) {
-        return x + (std::tanh(x * drive) / drive - x) * wet;
+    // Tube triode model: biased tanh generates predominantly 2nd harmonic (even-order).
+    // The DC bias shifts the operating point → asymmetric clipping → warmth, not grit.
+    // bias and drive both scale together so the asymmetry grows naturally with drive.
+    inline double TubeWarm(double x, double wet, double drive) {
+        const double k    = 1.0 + drive * 2.5;
+        const double bias = drive * 0.18;              // asymmetry → 2nd harmonic
+        const double dc   = std::tanh(bias * k) / k;  // pre-computed DC offset to remove
+        const double sat  = std::tanh((x + bias) * k) / k - dc;
+        return x + (sat - x) * wet;
     }
 
     inline void CookLowPass(double fs, double f0, double Q,
@@ -118,12 +122,11 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 //   1. L/R → M/S encode
 //   2. Mid EQ  (4 biquads — kick/snare body, JST Tone Low character)
 //   3. Side EQ (4 biquads — stereo width, hi-hat air)
-//   4. Band-split soft saturation above 2 kHz on M and S channels
-//        low-band  = LP(signal, 2kHz, Butterworth)  — passes untouched
-//        high-band = signal − low-band              — tanh saturated
-//        output    = low-band + SoftSat(high-band)
-//      Mid:  drive=3.0, wet=25% @ t=1  — presence/harmonic warmth on kick/snare mids
-//      Side: drive=2.0, wet=15% @ t=1  — shimmer on hi-hats, preserves spatial depth
+//   4. Band-split tube saturation: crossover LP at 200 Hz
+//        sub-bass (<200 Hz)  passes untouched (protects kick fundamental)
+//        above 200 Hz        → TubeWarm() asymmetric saturation → 2nd harmonic (warmth)
+//      Mid:  drive=0.6, wet=25% @ t=1  — kick/snare body warmth, Saturn 2 Tube character
+//      Side: drive=0.4, wet=15% @ t=1  — hi-hat shimmer, spatial warmth
 //   5. M/S → L/R decode
 //   6. 48 dB/oct Butterworth HC  ~15811 Hz (rolls off sat artefacts)
 //   7. Makeup gain  -2.5 dB @ t=1
@@ -144,13 +147,13 @@ void MasterEQ::Recalc()
     mSHI.SetPeaking  (mSR, 5000.0,  4.0*t, 0.65);
     mSHS.SetHighShelf(mSR, 8000.0,  3.0*t, 0.80);
 
-    // Band-split saturation wet amounts (high-band only, above 2 kHz)
+    // Tube saturation wet amounts (above 200 Hz: kick body through air)
     mSatWetMid  = t * 0.25;
     mSatWetSide = t * 0.15;
 
-    // 2 kHz Butterworth LP crossover for band-split (fixed, doesn't scale with t)
-    mMXO.SetLowPass(mSR, 2000.0, 0.7071);
-    mSXO.SetLowPass(mSR, 2000.0, 0.7071);
+    // 200 Hz LP crossover: sub-bass passes clean, everything above gets tube saturation
+    mMXO.SetLowPass(mSR, 200.0, 0.7071);
+    mSXO.SetLowPass(mSR, 200.0, 0.7071);
 
     // Makeup gain (-2.5 dB at t=1)
     mMakeupGain = std::pow(10.0, (-2.5*t) / 20.0);
@@ -207,25 +210,24 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
     mSHI.ProcessMonoD(sBuf.data(), nSamples);
     mSHS.ProcessMonoD(sBuf.data(), nSamples);
 
-    // Band-split saturation above 2 kHz (Saturn 2 Tube Warm multiband character)
-    // low-band = LP(x, 2kHz); high-band = x - low-band; out = low + SoftSat(high)
-    // LP + complement sum to flat, so wet=0 is transparent.
+    // Tube saturation above 200 Hz (Saturn 2 Tube Warm character: asymmetric → 2nd harmonic)
+    // sub-bass (<200 Hz) passes untouched; LP + complement sum = flat at wet=0.
     if (mSatWetMid > 1e-9) {
         std::copy(mBuf.data(), mBuf.data() + nSamples, xBuf.data());
-        mMXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = low-band
+        mMXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = sub-bass
         const double wm = mSatWetMid;
         for (int i = 0; i < nSamples; ++i) {
-            const double hi = mBuf[i] - xBuf[i];           // high-band (> 2 kHz)
-            mBuf[i] = xBuf[i] + SoftSat(hi, wm, 3.0);
+            const double hi = mBuf[i] - xBuf[i];           // >200 Hz band
+            mBuf[i] = xBuf[i] + TubeWarm(hi, wm, 0.6);
         }
     }
     if (mSatWetSide > 1e-9) {
         std::copy(sBuf.data(), sBuf.data() + nSamples, xBuf.data());
-        mSXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = low-band
+        mSXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = sub-bass
         const double ws = mSatWetSide;
         for (int i = 0; i < nSamples; ++i) {
-            const double hi = sBuf[i] - xBuf[i];           // high-band (> 2 kHz)
-            sBuf[i] = xBuf[i] + SoftSat(hi, ws, 2.0);
+            const double hi = sBuf[i] - xBuf[i];           // >200 Hz band
+            sBuf[i] = xBuf[i] + TubeWarm(hi, ws, 0.4);
         }
     }
 
