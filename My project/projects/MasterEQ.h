@@ -40,6 +40,10 @@ private:
     Biquad mSLS, mSLO, mSHI, mSHS;
     // High-cut: 48 dB/oct Butterworth applied to both channels after M/S decode
     Biquad mHC1, mHC2, mHC3, mHC4;
+
+    // Soft saturation wet amounts (0..1) for M/S channels
+    double mSatWetMid  = 0.0;
+    double mSatWetSide = 0.0;
 };
 
 extern template void MasterEQ::Process<float >(float*, float*, int);

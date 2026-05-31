@@ -60,6 +60,13 @@ namespace {
         a2=((A+1.0)-(A-1.0)*cw-sqA*alpha)/a0;
     }
 
+    // Soft-knee waveshaper: tanh with input drive, blended wet/dry.
+    // Unity gain for small signals; soft-clips peaks; adds harmonic richness.
+    // drive controls harmonic "colour": higher = more 3rd-harmonic grit.
+    inline double SoftSat(double x, double wet, double drive) {
+        return x + (std::tanh(x * drive) / drive - x) * wet;
+    }
+
     inline void CookLowPass(double fs, double f0, double Q,
         double& b0, double& b1, double& b2, double& a1, double& a2)
     {
@@ -106,23 +113,16 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 
 // -------- Recalc --------
 //
-// Mid/Side EQ approximating:
-//   JST Andrew Wade "Tone Low" ~80%  — centred kick body boost
-//   Saturn 2 "Tube Warm" from 2 kHz ~80%  — harmonic extension, stereo width
-//
-// MID channel (kick/snare, central mono image):
-//   mMLS  low shelf    +7.0 dB @  80 Hz  S=0.70   strong kick body
-//   mMLO  bell         +2.5 dB @ 250 Hz  Q=1.20   warmth / low density
-//   mMHI  bell         +2.5 dB @3500 Hz  Q=0.65   tube harmonic presence
-//   mMHS  hi-shelf cut -4.5 dB @9000 Hz  S=0.75   smooth mid top-end rounding
-//
-// SIDE channel (hi-hats, room stereo spread):
-//   mSLS  low shelf cut -9.0 dB @ 150 Hz  S=0.80  mono-ize bass (no low-end mud on sides)
-//   mSLO  bell          +1.5 dB @ 600 Hz  Q=1.00  side upper-mid presence
-//   mSHI  bell          +4.0 dB @5000 Hz  Q=0.65  cymbal stereo extension (Tube Warm sides)
-//   mSHS  hi shelf      +3.0 dB @8000 Hz  S=0.80  stereo air / hi-hat width
-//
-// Both channels: 48 dB/oct Butterworth HC at ~15811 Hz  +  makeup gain -2.5 dB
+// Signal chain per block:
+//   1. L/R → M/S encode
+//   2. Mid EQ  (4 biquads — kick/snare body, JST Tone Low character)
+//   3. Side EQ (4 biquads — stereo width, hi-hat air)
+//   4. Soft saturation on M and S (Saturn 2 Tube Warm harmonic generation)
+//      Mid:  drive=2.5, wet=18% @ t=1  — 2nd/3rd harmonic warmth on central content
+//      Side: drive=1.8, wet=10% @ t=1  — lighter, preserves spatial character
+//   5. M/S → L/R decode
+//   6. 48 dB/oct Butterworth HC  ~15811 Hz (rolls off sat artefacts + brightens)
+//   7. Makeup gain  -2.5 dB @ t=1
 //
 void MasterEQ::Recalc()
 {
@@ -139,6 +139,10 @@ void MasterEQ::Recalc()
     mSLO.SetPeaking  (mSR,  600.0,  1.5*t, 1.00);
     mSHI.SetPeaking  (mSR, 5000.0,  4.0*t, 0.65);
     mSHS.SetHighShelf(mSR, 8000.0,  3.0*t, 0.80);
+
+    // Saturation wet amounts: mid gets more drive for kick/snare body warmth
+    mSatWetMid  = t * 0.18;
+    mSatWetSide = t * 0.10;
 
     // Makeup gain (-2.5 dB at t=1)
     mMakeupGain = std::pow(10.0, (-2.5*t) / 20.0);
@@ -194,6 +198,16 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
     mSLO.ProcessMonoD(sBuf.data(), nSamples);
     mSHI.ProcessMonoD(sBuf.data(), nSamples);
     mSHS.ProcessMonoD(sBuf.data(), nSamples);
+
+    // Tube-style soft saturation (Saturn 2 Tube Warm harmonic generation)
+    // Applied before HC so any generated high harmonics are naturally rolled off.
+    if (mSatWetMid > 1e-9 || mSatWetSide > 1e-9) {
+        const double wm = mSatWetMid, ws = mSatWetSide;
+        for (int i = 0; i < nSamples; ++i) {
+            mBuf[i] = SoftSat(mBuf[i], wm, 2.5);
+            sBuf[i] = SoftSat(sBuf[i], ws, 1.8);
+        }
+    }
 
     // M/S → L/R decode
     for (int i = 0; i < nSamples; ++i) {
