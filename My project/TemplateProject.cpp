@@ -7593,7 +7593,25 @@ void TemplateProject::OnUIOpen()
             ct->SetOpen(wasOpen, /*noAnim*/ true); // вернуть исходное состояние
         }
 
-   
+    // Controls are recreated on every UI open — push current solo/mute state to restore button visuals.
+    {
+        auto push = [&](const std::atomic<bool>& b, int tag) {
+            SendControlValueFromDelegate(tag, b.load(std::memory_order_acquire) ? 1.0 : 0.0);
+        };
+        push(mKickMuted,   kCtrlTagKickMuteButton);    push(mKickSolo,   kCtrlTagKickSoloButton);
+        push(mSnareMuted,  kCtrlTagSnareMuteButton);   push(mSnareSolo,  kCtrlTagSnareSoloButton);
+        push(mTom1Muted,   kCtrlTagTom1MuteButton);    push(mTom1Solo,   kCtrlTagTom1SoloButton);
+        push(mTom2Muted,   kCtrlTagTom2MuteButton);    push(mTom2Solo,   kCtrlTagTom2SoloButton);
+        push(mTom3Muted,   kCtrlTagTom3MuteButton);    push(mTom3Solo,   kCtrlTagTom3SoloButton);
+        push(mCymMuted,    kCtrlTagCymbalsMuteButton);  push(mCymSolo,    kCtrlTagCymbalsSoloButton);
+        push(mRoomsMuted,  kCtrlTagRoomsMuteButton);   push(mRoomsSolo,  kCtrlTagRoomsSoloButton);
+        push(mHHMuted,     kCtrlTagHHMuteButton);      push(mHHSolo,     kCtrlTagHHSoloButton);
+        push(mCrashLMuted, kCtrlTagCrashLMuteButton);  push(mCrashLSolo, kCtrlTagCrashLSoloButton);
+        push(mCrashRMuted, kCtrlTagCrashRMuteButton);  push(mCrashRSolo, kCtrlTagCrashRSoloButton);
+        push(mSplashMuted, kCtrlTagSplashMuteButton);  push(mSplashSolo, kCtrlTagSplashSoloButton);
+        push(mRideMuted,   kCtrlTagRideMuteButton);    push(mRideSolo,   kCtrlTagRideSoloButton);
+        push(mChinaMuted,  kCtrlTagChinaMuteButton);   push(mChinaSolo,  kCtrlTagChinaSoloButton);
+    }
 }
 
 void TemplateProject::OnUIClose()
