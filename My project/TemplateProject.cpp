@@ -8304,8 +8304,8 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
 
   
 
-    // 16) Вывод в мастер + MasterGlue/Tame — bus 0 (outputs[0/1]) always carries master mix
-    if (nOutChans >= 2 && outputs[0] && outputs[1])
+    // 16) Вывод в мастер + MasterGlue/Tame
+    if (routeMixToMain && nOutChans >= 2 && outputs[0] && outputs[1])
     {
         const int Lm = 0, Rm = 1;
         for (int s = 0; s < nFrames; ++s)
@@ -8319,13 +8319,27 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
         mMasterTame.Process(masterPair, nFrames, 2);
     }
 
-    // 17) Master meter — bus 0 always has processed master mix after fix above
+    // 17) Master meter
     {
-        if (nOutChans >= 2 && outputs[0] && outputs[1])
+        if (routeMixToMain && nOutChans >= 2 && outputs[0] && outputs[1])
         {
             sample* masterStereo[2] = { outputs[0], outputs[1] };
             mMasterMeterSender.ProcessBlock(masterStereo, nFrames, kCtrlTagMasterMeter);
             SendHotFlag(mBalMaster, outputs[0], outputs[1], nFrames, kCtrlTagMasterMeter, 0.f, 6.f);
+        }
+        else
+        {
+            // multi-out: mix buffer has MasterEQ applied, use it for meter
+            static thread_local std::vector<sample> tL, tR;
+            if ((int)tL.size() < nFrames) tL.resize(nFrames);
+            if ((int)tR.size() < nFrames) tR.resize(nFrames);
+            for (int s = 0; s < nFrames; ++s) {
+                tL[s] = (sample)((double)mMixL[s] * (double)gMaster);
+                tR[s] = (sample)((double)mMixR[s] * (double)gMaster);
+            }
+            sample* masterStereo[2] = { tL.data(), tR.data() };
+            mMasterMeterSender.ProcessBlock(masterStereo, nFrames, kCtrlTagMasterMeter);
+            SendHotFlag(mBalMaster, tL.data(), tR.data(), nFrames, kCtrlTagMasterMeter, 0.f, 6.f);
         }
     }
 
@@ -8345,15 +8359,13 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
                 }
             };
 
-        // Bus 0 (ch 0/1) = Master Mix — written above in section 16.
-        // Stems start from bus 1 (ch 2/3) onwards.
-        writePair(2,  3,  mKickL.data(),  mKickR.data(),  gMaster);
-        writePair(4,  5,  mSnareL.data(), mSnareR.data(), gMaster);
-        writePair(6,  7,  mTom1L.data(),  mTom1R.data(),  gMaster);
-        writePair(8,  9,  mTom2L.data(),  mTom2R.data(),  gMaster);
-        writePair(10, 11, mTom3L.data(),  mTom3R.data(),  gMaster);
-        writePair(12, 13, cymL.data(),    cymR.data(),    gMaster);
-        writePair(14, 15, mTmpL.data(),   mTmpR.data(),   gMaster);
+        writePair(0,  1,  mKickL.data(),  mKickR.data(),  gMaster);
+        writePair(2,  3,  mSnareL.data(), mSnareR.data(), gMaster);
+        writePair(4,  5,  mTom1L.data(),  mTom1R.data(),  gMaster);
+        writePair(6,  7,  mTom2L.data(),  mTom2R.data(),  gMaster);
+        writePair(8,  9,  mTom3L.data(),  mTom3R.data(),  gMaster);
+        writePair(10, 11, cymL.data(),    cymR.data(),    gMaster);
+        writePair(12, 13, mTmpL.data(),   mTmpR.data(),   gMaster);
     }
 #endif
 }
@@ -8364,14 +8376,13 @@ void TemplateProject::GetBusName(iplug::ERoute direction, int busIdx, int nBuses
     if (direction == iplug::ERoute::kOutput)
     {
         static const char* kOutBusNames[] = {
-          "Master",    // 0/1  — always carries master mix (MasterEQ applied)
-          "Kick",      // 2/3
-          "Snare",     // 4/5
-          "Tom 1",     // 6/7
-          "Tom 2",     // 8/9
-          "Tom 3",     // 10/11
-          "Overheads", // 12/13
-          "Room"       // 14/15
+          "Kick",      // 0/1
+          "Snare",     // 2/3
+          "Tom 1",     // 4/5
+          "Tom 2",     // 6/7
+          "Tom 3",     // 8/9
+          "Overheads", // 10/11
+          "Room"       // 12/13
         };
         const int nNamed = (int)(sizeof(kOutBusNames) / sizeof(kOutBusNames[0]));
         if (busIdx >= 0 && busIdx < nBuses && busIdx < nNamed)
