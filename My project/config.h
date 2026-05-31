@@ -2,7 +2,7 @@
 #define PLUG_MFR "AquamarineRecords"
 #define PLUG_VERSION_HEX 0x00000000
 #define PLUG_VERSION_STR "0.0.0"
-#define PLUG_UNIQUE_ID '2201'      // << проверьте уникальность в ваших проектах
+#define PLUG_UNIQUE_ID '2201'      // << пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ
 #define PLUG_MFR_ID 'AQMR'         
 #define PLUG_URL_STR "https://iplug2.github.io"         
 #define PLUG_EMAIL_STR "info@aquamarinerecords.com"     
@@ -15,7 +15,7 @@
 
 #define SHARED_RESOURCES_SUBPATH "TemplateProject"
 
-// Вместо единого #define PLUG_CHANNEL_IO ...:
+// пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ #define PLUG_CHANNEL_IO ...:
 #if defined(APP_API)
 #define PLUG_CHANNEL_IO "2-2"
 #else
@@ -26,7 +26,8 @@
 0-2.2.2.2 \
 0-2.2.2.2.2 \
 0-2.2.2.2.2.2 \
-0-2.2.2.2.2.2.2"
+0-2.2.2.2.2.2.2 \
+0-2.2.2.2.2.2.2.2"
 #endif
 
 #define PLUG_LATENCY 0
@@ -44,7 +45,7 @@
 #define PLUG_MIN_WIDTH 1500
 #define PLUG_MIN_HEIGHT 864
 
-// AUv2 идентификаторы из класса TemplateProject
+// AUv2 пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ TemplateProject
 #define AUV2_ENTRY TemplateProject_Entry
 #define AUV2_ENTRY_STR "TemplateProject_Entry"
 #define AUV2_FACTORY TemplateProject_Factory

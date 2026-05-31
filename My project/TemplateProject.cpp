@@ -1430,6 +1430,25 @@ bool TemplateProject::SerializeState(IByteChunk& chunk) const
     }
     chunk.PutBytes(&mCurrentCustomIdx, (int)sizeof(int));
 
+    // === MUTE / SOLO STATES ===
+    auto putBool = [&](const std::atomic<bool>& b) {
+        const int v = b.load(std::memory_order_acquire) ? 1 : 0;
+        chunk.PutBytes(&v, (int)sizeof(int));
+    };
+    putBool(mKickMuted);    putBool(mKickSolo);
+    putBool(mSnareMuted);   putBool(mSnareSolo);
+    putBool(mTom1Muted);    putBool(mTom1Solo);
+    putBool(mTom2Muted);    putBool(mTom2Solo);
+    putBool(mTom3Muted);    putBool(mTom3Solo);
+    putBool(mCymMuted);     putBool(mCymSolo);
+    putBool(mRoomsMuted);   putBool(mRoomsSolo);
+    putBool(mHHMuted);      putBool(mHHSolo);
+    putBool(mCrashLMuted);  putBool(mCrashLSolo);
+    putBool(mCrashRMuted);  putBool(mCrashRSolo);
+    putBool(mSplashMuted);  putBool(mSplashSolo);
+    putBool(mRideMuted);    putBool(mRideSolo);
+    putBool(mChinaMuted);   putBool(mChinaSolo);
+
     return true;
 }
 
@@ -1521,6 +1540,31 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
             }
             // marker == 0: no custom presets
         }
+    }
+
+    // === MUTE / SOLO STATES (backward-compat: missing fields keep default false) ===
+    {
+        auto getBool = [&](std::atomic<bool>& target, int ctrlTag) {
+            int v = 0;
+            int np = chunk.GetBytes(&v, (int)sizeof(int), pos);
+            if (np <= 0) return;
+            pos = np;
+            target.store(v != 0, std::memory_order_release);
+            SendControlValueFromDelegate(ctrlTag, v != 0 ? 1.0 : 0.0);
+        };
+        getBool(mKickMuted,   kCtrlTagKickMuteButton);    getBool(mKickSolo,   kCtrlTagKickSoloButton);
+        getBool(mSnareMuted,  kCtrlTagSnareMuteButton);   getBool(mSnareSolo,  kCtrlTagSnareSoloButton);
+        getBool(mTom1Muted,   kCtrlTagTom1MuteButton);    getBool(mTom1Solo,   kCtrlTagTom1SoloButton);
+        getBool(mTom2Muted,   kCtrlTagTom2MuteButton);    getBool(mTom2Solo,   kCtrlTagTom2SoloButton);
+        getBool(mTom3Muted,   kCtrlTagTom3MuteButton);    getBool(mTom3Solo,   kCtrlTagTom3SoloButton);
+        getBool(mCymMuted,    kCtrlTagCymbalsMuteButton);  getBool(mCymSolo,    kCtrlTagCymbalsSoloButton);
+        getBool(mRoomsMuted,  kCtrlTagRoomsMuteButton);   getBool(mRoomsSolo,  kCtrlTagRoomsSoloButton);
+        getBool(mHHMuted,     kCtrlTagHHMuteButton);      getBool(mHHSolo,     kCtrlTagHHSoloButton);
+        getBool(mCrashLMuted, kCtrlTagCrashLMuteButton);  getBool(mCrashLSolo, kCtrlTagCrashLSoloButton);
+        getBool(mCrashRMuted, kCtrlTagCrashRMuteButton);  getBool(mCrashRSolo, kCtrlTagCrashRSoloButton);
+        getBool(mSplashMuted, kCtrlTagSplashMuteButton);  getBool(mSplashSolo, kCtrlTagSplashSoloButton);
+        getBool(mRideMuted,   kCtrlTagRideMuteButton);    getBool(mRideSolo,   kCtrlTagRideSoloButton);
+        getBool(mChinaMuted,  kCtrlTagChinaMuteButton);   getBool(mChinaSolo,  kCtrlTagChinaSoloButton);
     }
 
     // Загружаем sndlib: сначала из сохранённого пути проекта, иначе из закешированного пути
@@ -8251,20 +8295,17 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
         mMixR[s] = (sample)softClip(r);
     }
 
-    if (routeMixToMain)
-        mMasterTransShaper.Process(mMixL.data(), mMixR.data(), nFrames);
+    mMasterTransShaper.Process(mMixL.data(), mMixR.data(), nFrames);
 
-    // 15) MasterEQ / ParallelComp — только если микс идёт в main stereo
-    if (routeMixToMain)
-        mMasterEQ.Process(mMixL.data(), mMixR.data(), nFrames);
+    // 15) MasterEQ / ParallelComp — always on master mix (bus 0 in all modes)
+    mMasterEQ.Process(mMixL.data(), mMixR.data(), nFrames);
 
-    if (routeMixToMain)
-        mParallelComp.Process(mMixL.data(), mMixR.data(), nFrames);
+    mParallelComp.Process(mMixL.data(), mMixR.data(), nFrames);
 
   
 
-    // 16) Вывод в мастер + MasterGlue/Tame
-    if (routeMixToMain && nOutChans >= 2 && outputs[0] && outputs[1])
+    // 16) Вывод в мастер + MasterGlue/Tame — bus 0 (outputs[0/1]) always carries master mix
+    if (nOutChans >= 2 && outputs[0] && outputs[1])
     {
         const int Lm = 0, Rm = 1;
         for (int s = 0; s < nFrames; ++s)
@@ -8278,26 +8319,13 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
         mMasterTame.Process(masterPair, nFrames, 2);
     }
 
-    // 17) Master meter — после master gain и Glue/Tame (или pre-Glue в multi-out)
+    // 17) Master meter — bus 0 always has processed master mix after fix above
     {
-        if (routeMixToMain && nOutChans >= 2 && outputs[0] && outputs[1])
+        if (nOutChans >= 2 && outputs[0] && outputs[1])
         {
             sample* masterStereo[2] = { outputs[0], outputs[1] };
             mMasterMeterSender.ProcessBlock(masterStereo, nFrames, kCtrlTagMasterMeter);
             SendHotFlag(mBalMaster, outputs[0], outputs[1], nFrames, kCtrlTagMasterMeter, 0.f, 6.f);
-        }
-        else
-        {
-            static thread_local std::vector<sample> tL, tR;
-            if ((int)tL.size() < nFrames) tL.resize(nFrames);
-            if ((int)tR.size() < nFrames) tR.resize(nFrames);
-            for (int s = 0; s < nFrames; ++s) {
-                tL[s] = (sample)((double)mMixL[s] * (double)gMaster);
-                tR[s] = (sample)((double)mMixR[s] * (double)gMaster);
-            }
-            sample* masterStereo[2] = { tL.data(), tR.data() };
-            mMasterMeterSender.ProcessBlock(masterStereo, nFrames, kCtrlTagMasterMeter);
-            SendHotFlag(mBalMaster, tL.data(), tR.data(), nFrames, kCtrlTagMasterMeter, 0.f, 6.f);
         }
     }
 
@@ -8317,13 +8345,15 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
                 }
             };
 
-        writePair(0, 1, mKickL.data(), mKickR.data(), gMaster);
-        writePair(2, 3, mSnareL.data(), mSnareR.data(), gMaster);
-        writePair(4, 5, mTom1L.data(), mTom1R.data(), gMaster);
-        writePair(6, 7, mTom2L.data(), mTom2R.data(), gMaster);
-        writePair(8, 9, mTom3L.data(), mTom3R.data(), gMaster);
-        writePair(10, 11, cymL.data(), cymR.data(), gMaster); // Cymbals = общий стем (OH + close)
-        writePair(12, 13, mTmpL.data(), mTmpR.data(), gMaster); // Rooms сумма
+        // Bus 0 (ch 0/1) = Master Mix — written above in section 16.
+        // Stems start from bus 1 (ch 2/3) onwards.
+        writePair(2,  3,  mKickL.data(),  mKickR.data(),  gMaster);
+        writePair(4,  5,  mSnareL.data(), mSnareR.data(), gMaster);
+        writePair(6,  7,  mTom1L.data(),  mTom1R.data(),  gMaster);
+        writePair(8,  9,  mTom2L.data(),  mTom2R.data(),  gMaster);
+        writePair(10, 11, mTom3L.data(),  mTom3R.data(),  gMaster);
+        writePair(12, 13, cymL.data(),    cymR.data(),    gMaster);
+        writePair(14, 15, mTmpL.data(),   mTmpR.data(),   gMaster);
     }
 #endif
 }
@@ -8334,13 +8364,14 @@ void TemplateProject::GetBusName(iplug::ERoute direction, int busIdx, int nBuses
     if (direction == iplug::ERoute::kOutput)
     {
         static const char* kOutBusNames[] = {
-          "Kick",     // 0/1
-          "Snare",    // 2/3
-          "Tom 1",    // 4/5
-          "Tom 2",    // 6/7
-          "Tom 3",    // 8/9
-          "Overheads",  // 10/11
-          "Room"     // 12/13
+          "Master",    // 0/1  — always carries master mix (MasterEQ applied)
+          "Kick",      // 2/3
+          "Snare",     // 4/5
+          "Tom 1",     // 6/7
+          "Tom 2",     // 8/9
+          "Tom 3",     // 10/11
+          "Overheads", // 12/13
+          "Room"       // 14/15
         };
         const int nNamed = (int)(sizeof(kOutBusNames) / sizeof(kOutBusNames[0]));
         if (busIdx >= 0 && busIdx < nBuses && busIdx < nNamed)
