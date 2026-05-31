@@ -122,11 +122,12 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 //   1. L/R → M/S encode
 //   2. Mid EQ  (4 biquads — kick/snare body, JST Tone Low character)
 //   3. Side EQ (4 biquads — stereo width, hi-hat air)
-//   4. Band-split tube saturation: crossover LP at 200 Hz
-//        sub-bass (<200 Hz)  passes untouched (protects kick fundamental)
-//        above 200 Hz        → TubeWarm() asymmetric saturation → 2nd harmonic (warmth)
-//      Mid:  drive=0.6, wet=25% @ t=1  — kick/snare body warmth, Saturn 2 Tube character
-//      Side: drive=0.4, wet=15% @ t=1  — hi-hat shimmer, spatial warmth
+//   4. Band-split tube saturation: crossover LP at 2 kHz
+//        below 2 kHz  passes untouched (kick body, snare, low mids — clean)
+//        above 2 kHz  → TubeWarm() asymmetric saturation, drive=0.8 (=80%)
+//      Matches Saturn 2 Tube Warm: band 1 xover @ 2kHz, drive 80% on upper band
+//      Mid:  wet=25% @ t=1
+//      Side: wet=15% @ t=1
 //   5. M/S → L/R decode
 //   6. 48 dB/oct Butterworth HC  ~15811 Hz (rolls off sat artefacts)
 //   7. Makeup gain  -2.5 dB @ t=1
@@ -151,9 +152,9 @@ void MasterEQ::Recalc()
     mSatWetMid  = t * 0.25;
     mSatWetSide = t * 0.15;
 
-    // 200 Hz LP crossover: sub-bass passes clean, everything above gets tube saturation
-    mMXO.SetLowPass(mSR, 200.0, 0.7071);
-    mSXO.SetLowPass(mSR, 200.0, 0.7071);
+    // 2 kHz LP crossover: below passes clean; above 2kHz gets Tube Warm (drive=0.8)
+    mMXO.SetLowPass(mSR, 2000.0, 0.7071);
+    mSXO.SetLowPass(mSR, 2000.0, 0.7071);
 
     // Makeup gain (-2.5 dB at t=1)
     mMakeupGain = std::pow(10.0, (-2.5*t) / 20.0);
@@ -210,24 +211,24 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
     mSHI.ProcessMonoD(sBuf.data(), nSamples);
     mSHS.ProcessMonoD(sBuf.data(), nSamples);
 
-    // Tube saturation above 200 Hz (Saturn 2 Tube Warm character: asymmetric → 2nd harmonic)
-    // sub-bass (<200 Hz) passes untouched; LP + complement sum = flat at wet=0.
+    // Tube Warm saturation above 2 kHz (Saturn 2: band 1 xover @ 2kHz, drive 80%)
+    // Below 2 kHz passes untouched; LP + complement sum = flat at wet=0.
     if (mSatWetMid > 1e-9) {
         std::copy(mBuf.data(), mBuf.data() + nSamples, xBuf.data());
-        mMXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = sub-bass
+        mMXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = below 2 kHz
         const double wm = mSatWetMid;
         for (int i = 0; i < nSamples; ++i) {
-            const double hi = mBuf[i] - xBuf[i];           // >200 Hz band
-            mBuf[i] = xBuf[i] + TubeWarm(hi, wm, 0.6);
+            const double hi = mBuf[i] - xBuf[i];           // above 2 kHz
+            mBuf[i] = xBuf[i] + TubeWarm(hi, wm, 0.8);
         }
     }
     if (mSatWetSide > 1e-9) {
         std::copy(sBuf.data(), sBuf.data() + nSamples, xBuf.data());
-        mSXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = sub-bass
+        mSXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = below 2 kHz
         const double ws = mSatWetSide;
         for (int i = 0; i < nSamples; ++i) {
-            const double hi = sBuf[i] - xBuf[i];           // >200 Hz band
-            sBuf[i] = xBuf[i] + TubeWarm(hi, ws, 0.4);
+            const double hi = sBuf[i] - xBuf[i];           // above 2 kHz
+            sBuf[i] = xBuf[i] + TubeWarm(hi, ws, 0.8);
         }
     }
 
