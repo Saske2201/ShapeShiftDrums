@@ -25,7 +25,8 @@ private:
     double mSR  = 44100.0;
     double mAmt = 0.5;
 
-    Biquad mXover;          // 2 kHz LP — HP = signal − LP fed into saturator
+    Biquad mXover;   // 2 kHz LP — HP = signal − LP fed into saturator
+    Biquad mHC;      // gentle high-cut: 20kHz→12kHz as knob increases
 
     double mSatD   = 1.0;   // drive: D = 1 + t*7  (1→8)
     double mSatWet = 0.0;   // wet blend: 0→0.20  (matches Saturn mix=20%)
