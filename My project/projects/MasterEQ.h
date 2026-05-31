@@ -18,6 +18,7 @@ private:
         double z1L=0, z2L=0, z1R=0, z2R=0;
         void Reset() { z1L=z2L=z1R=z2R=0.0; }
         void SetLowPass(double fs, double f0, double Q);
+        void SetPeak(double fs, double f0, double Q, double dBgain);
     };
 
     void Recalc();
@@ -25,12 +26,16 @@ private:
     double mSR  = 44100.0;
     double mAmt = 0.5;
 
-    Biquad mXover;   // 2 kHz LP — HP = signal − LP fed into saturator
-    Biquad mHC;      // gentle high-cut: 20kHz→12kHz as knob increases
+    Biquad mLowEQ;   // bell +4dB @50Hz — bass boost (AW BG-Drums Tone Low)
+    Biquad mLXover;  // 200Hz LP — splits low band for kick/bass saturation
+    Biquad mXover;   // 2kHz LP — splits high band for sibilance saturation
+    Biquad mHC;      // gentle high-cut: 20kHz→12kHz (warmth)
 
-    double mSatD       = 1.0;   // drive: D = 1 + t*7  (1→8)
-    double mSatWet     = 0.0;   // wet blend: 0→0.20
-    double mMakeupGain = 1.0;   // compensates level increase from saturation
+    double mLowD       = 1.0;   // low-band drive: 1→4
+    double mLowWet     = 0.0;   // low-band wet: 0→35%
+    double mSatD       = 1.0;   // high-band drive: 1→8
+    double mSatWet     = 0.0;   // high-band wet: 0→20%
+    double mMakeupGain = 1.0;
 };
 
 extern template void MasterEQ::Process<float >(float*, float*, int);
