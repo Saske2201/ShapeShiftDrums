@@ -10,20 +10,25 @@ namespace {
         return std::clamp(f0, 10.0, fs * 0.49);
     }
 
-    // Gain-compensated tube saturation: tanh(x*k) / tanh(k)
-    // At x=0:   output = 0              (no DC)
-    // At x=±1:  output = ±1             (unity at full scale)
-    // At small x: gain = k/tanh(k) > 1  (quiet signals boosted → audible harmonics)
-    // This is the key difference vs dividing by k (which gives unity-gain at all levels).
-    inline double TubeSat(double x, double k, double norm, double wet) {
-        const double sat = std::tanh(x * k) / norm;
-        return x + (sat - x) * wet;
+    // Pre-gain saturation with level compensation.
+    //
+    // D   = pre-gain: pushes signal into tanh saturation zone
+    // comp = x_ref / tanh(x_ref * D): restores level at the reference amplitude
+    //
+    // Result at -12 dBFS reference (x≈0.25): output ≈ input (level preserved)
+    // Result above reference: soft-clipped (peaks reduced — compression)
+    // Result below reference: slightly boosted (room tails lifted — warmth)
+    // All amplitudes: harmonic distortion added (saturation character)
+    //
+    // bias: small positive offset → asymmetric → 2nd harmonic (tube warmth)
+    inline double TubeSat(double x, double D, double comp, double bias) {
+        return (std::tanh((x + bias) * D) - std::tanh(bias * D)) * comp;
     }
 
     inline void CookLowPass(double fs, double f0, double Q,
         double& b0, double& b1, double& b2, double& a1, double& a2)
     {
-        f0 = clampHz(f0, fs); Q = std::max(1e-4, Q);
+        f0 = std::clamp(f0, 10.0, fs * 0.49); Q = std::max(1e-4, Q);
         const double w0 = 2.0*kPI*(f0/fs);
         const double cw = std::cos(w0), sw = std::sin(w0);
         const double alpha = sw/(2.0*Q);
@@ -61,24 +66,27 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 
 // -------- Recalc --------
 //
-// Signal chain per block:
-//   1. L/R → M/S encode
-//   2. TubeSat: tanh(x*k)/tanh(k) on M and S
-//        quiet signals gain k/tanh(k) → audible harmonic richness ("warmth")
-//        peaks soft-limited to ±1
-//      k = 1 + t*2  (1 at t=0 → 3 at t=1)
-//      Mid wet=40%, Side wet=25% at t=1
-//   3. M/S → L/R decode
-//   4. 48 dB/oct Butterworth HC (~15811 Hz at t=1) — rolls off saturation artefacts
+// Signal chain:
+//   L/R → M/S → TubeSat on M (wet 70%) and S (wet 45%) → M/S → L/R → HC
+//
+// TubeSat: pre-gain D pushes signal into tanh; comp restores level at -12dBFS.
+//   D = 1 + t*3  →  D: 1 (t=0) … 4 (t=1)
+//   comp = 0.25 / tanh(0.25 * D)
+//
+// At t=1, for a typical -12dBFS drum signal:
+//   -6dBFS peaks  → ~25% reduction (soft compression)
+//   -12dBFS body  → level preserved
+//   -20dBFS tails → ~12% lift (warmth / room breathe)
+//   Throughout    → harmonic distortion added (THD ~5-15%)
 //
 void MasterEQ::Recalc()
 {
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
-    mSatK      = 1.0 + t * 2.0;          // k: 1 → 3
-    mSatNorm   = std::tanh(mSatK);        // precompute for inner loop
-    mSatWetMid  = t * 0.40;
-    mSatWetSide = t * 0.25;
+    mSatD       = 1.0 + t * 3.0;                              // D: 1→4
+    mSatComp    = 0.25 / std::tanh(0.25 * mSatD);             // level comp at -12dBFS
+    mSatWetMid  = t * 0.70;
+    mSatWetSide = t * 0.45;
 
     const double hcHz = std::exp(std::log(20000.0) + t*std::log(15811.0/20000.0));
     mHC1.SetLowPass(mSR, hcHz, 0.5098);
@@ -118,16 +126,20 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
         sBuf[i] = ((double)L[i] - (double)R[i]) * kRt2;
     }
 
-    // Tube saturation: gain-compensated tanh — harmonics clearly audible
+    // Tube saturation: pre-gain D, level-compensated at -12dBFS, small bias for 2nd harmonic
     if (mSatWetMid > 1e-9) {
-        const double k = mSatK, norm = mSatNorm, wm = mSatWetMid;
-        for (int i = 0; i < nSamples; ++i)
-            mBuf[i] = TubeSat(mBuf[i], k, norm, wm);
+        const double D = mSatD, comp = mSatComp, bias = mSatD * 0.012, wm = mSatWetMid;
+        for (int i = 0; i < nSamples; ++i) {
+            const double sat = TubeSat(mBuf[i], D, comp, bias);
+            mBuf[i] = mBuf[i] + (sat - mBuf[i]) * wm;
+        }
     }
     if (mSatWetSide > 1e-9) {
-        const double k = mSatK, norm = mSatNorm, ws = mSatWetSide;
-        for (int i = 0; i < nSamples; ++i)
-            sBuf[i] = TubeSat(sBuf[i], k, norm, ws);
+        const double D = mSatD, comp = mSatComp, bias = mSatD * 0.006, ws = mSatWetSide;
+        for (int i = 0; i < nSamples; ++i) {
+            const double sat = TubeSat(sBuf[i], D, comp, bias);
+            sBuf[i] = sBuf[i] + (sat - sBuf[i]) * ws;
+        }
     }
 
     // M/S → L/R decode
@@ -136,7 +148,7 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
         R[i] = (T)((mBuf[i] - sBuf[i]) * kRt2);
     }
 
-    // 48 dB/oct HC — rolls off saturation artefacts near Nyquist
+    // 48 dB/oct HC
     mHC1.Process(L, R, nSamples);
     mHC2.Process(L, R, nSamples);
     mHC3.Process(L, R, nSamples);

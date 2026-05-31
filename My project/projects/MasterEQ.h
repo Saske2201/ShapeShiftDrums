@@ -30,12 +30,12 @@ private:
     double mSR  = 44100.0;
     double mAmt = 0.5;
 
-    // 48 dB/oct Butterworth HC — rolls off saturation artefacts near Nyquist
+    // 48 dB/oct Butterworth HC
     Biquad mHC1, mHC2, mHC3, mHC4;
 
     // Saturation parameters (precomputed in Recalc)
-    double mSatK      = 1.0;   // tanh drive factor: k = 1 + t*2 (1→3)
-    double mSatNorm   = 1.0;   // tanh(k) for gain normalisation
+    double mSatD       = 1.0;   // pre-gain drive factor
+    double mSatComp    = 1.0;   // level compensation (keeps -12dBFS signal at same level)
     double mSatWetMid  = 0.0;
     double mSatWetSide = 0.0;
 };
