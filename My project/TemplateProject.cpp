@@ -8295,12 +8295,14 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
         mMixR[s] = (sample)softClip(r);
     }
 
-    mMasterTransShaper.Process(mMixL.data(), mMixR.data(), nFrames);
-
-    // 15) MasterEQ / ParallelComp — always on master mix (bus 0 in all modes)
-    mMasterEQ.Process(mMixL.data(), mMixR.data(), nFrames);
-
-    mParallelComp.Process(mMixL.data(), mMixR.data(), nFrames);
+    // 15) MasterEQ / TransShaper / ParallelComp — only when mix goes to main out
+    // In multi-out mode, per-stem EQ instances (mEQKick etc.) already applied MasterEQ to each stem.
+    if (routeMixToMain)
+    {
+        mMasterTransShaper.Process(mMixL.data(), mMixR.data(), nFrames);
+        mMasterEQ.Process(mMixL.data(), mMixR.data(), nFrames);
+        mParallelComp.Process(mMixL.data(), mMixR.data(), nFrames);
+    }
 
   
 
