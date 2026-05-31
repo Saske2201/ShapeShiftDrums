@@ -33,6 +33,9 @@ private:
     // 48 dB/oct Butterworth HC — rolls off saturation artefacts near Nyquist
     Biquad mHC1, mHC2, mHC3, mHC4;
 
+    // Saturation parameters (precomputed in Recalc)
+    double mSatK      = 1.0;   // tanh drive factor: k = 1 + t*2 (1→3)
+    double mSatNorm   = 1.0;   // tanh(k) for gain normalisation
     double mSatWetMid  = 0.0;
     double mSatWetSide = 0.0;
 };

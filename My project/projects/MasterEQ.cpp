@@ -10,13 +10,13 @@ namespace {
         return std::clamp(f0, 10.0, fs * 0.49);
     }
 
-    // Tube triode model: biased tanh generates predominantly 2nd harmonic (even-order warmth).
-    // bias shifts the operating point → asymmetric clipping → 2nd harmonic, not 3rd.
-    inline double TubeWarm(double x, double wet, double drive) {
-        const double k    = 1.0 + drive * 2.5;
-        const double bias = drive * 0.18;
-        const double dc   = std::tanh(bias * k) / k;
-        const double sat  = std::tanh((x + bias) * k) / k - dc;
+    // Gain-compensated tube saturation: tanh(x*k) / tanh(k)
+    // At x=0:   output = 0              (no DC)
+    // At x=±1:  output = ±1             (unity at full scale)
+    // At small x: gain = k/tanh(k) > 1  (quiet signals boosted → audible harmonics)
+    // This is the key difference vs dividing by k (which gives unity-gain at all levels).
+    inline double TubeSat(double x, double k, double norm, double wet) {
+        const double sat = std::tanh(x * k) / norm;
         return x + (sat - x) * wet;
     }
 
@@ -59,15 +59,27 @@ void MasterEQ::Reset()
 
 void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); Recalc(); }
 
+// -------- Recalc --------
+//
+// Signal chain per block:
+//   1. L/R → M/S encode
+//   2. TubeSat: tanh(x*k)/tanh(k) on M and S
+//        quiet signals gain k/tanh(k) → audible harmonic richness ("warmth")
+//        peaks soft-limited to ±1
+//      k = 1 + t*2  (1 at t=0 → 3 at t=1)
+//      Mid wet=40%, Side wet=25% at t=1
+//   3. M/S → L/R decode
+//   4. 48 dB/oct Butterworth HC (~15811 Hz at t=1) — rolls off saturation artefacts
+//
 void MasterEQ::Recalc()
 {
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
-    // Full-band tube saturation wet amounts — high enough to be clearly audible
-    mSatWetMid  = t * 0.50;   // mid channel: strong tube coloring on kick/snare
-    mSatWetSide = t * 0.30;   // side channel: lighter, preserves stereo
+    mSatK      = 1.0 + t * 2.0;          // k: 1 → 3
+    mSatNorm   = std::tanh(mSatK);        // precompute for inner loop
+    mSatWetMid  = t * 0.40;
+    mSatWetSide = t * 0.25;
 
-    // HC cutoff slides 20kHz (t=0) → 15811 Hz (t=1)
     const double hcHz = std::exp(std::log(20000.0) + t*std::log(15811.0/20000.0));
     mHC1.SetLowPass(mSR, hcHz, 0.5098);
     mHC2.SetLowPass(mSR, hcHz, 0.6013);
@@ -106,16 +118,16 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
         sBuf[i] = ((double)L[i] - (double)R[i]) * kRt2;
     }
 
-    // Full-band tube saturation on M and S independently
+    // Tube saturation: gain-compensated tanh — harmonics clearly audible
     if (mSatWetMid > 1e-9) {
-        const double wm = mSatWetMid;
+        const double k = mSatK, norm = mSatNorm, wm = mSatWetMid;
         for (int i = 0; i < nSamples; ++i)
-            mBuf[i] = TubeWarm(mBuf[i], wm, 0.8);
+            mBuf[i] = TubeSat(mBuf[i], k, norm, wm);
     }
     if (mSatWetSide > 1e-9) {
-        const double ws = mSatWetSide;
+        const double k = mSatK, norm = mSatNorm, ws = mSatWetSide;
         for (int i = 0; i < nSamples; ++i)
-            sBuf[i] = TubeWarm(sBuf[i], ws, 0.6);
+            sBuf[i] = TubeSat(sBuf[i], k, norm, ws);
     }
 
     // M/S → L/R decode
