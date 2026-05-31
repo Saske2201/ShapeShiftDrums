@@ -13,31 +13,15 @@ public:
     void Process(T* L, T* R, int nSamples);
 
 private:
-    struct Biquad {
-        double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-        double z1L = 0, z2L = 0, z1R = 0, z2R = 0;
-
-        void Reset();
-        void SetLowPass(double fs, double f0, double Q);
-        void ProcessMonoD(double* buf, int n);
-
-        template<class T>
-        void Process(T* L, T* R, int n);
-    };
-
     void Recalc();
 
     double mSR  = 44100.0;
     double mAmt = 0.5;
 
-    // 48 dB/oct Butterworth HC
-    Biquad mHC1, mHC2, mHC3, mHC4;
-
-    // Saturation parameters (precomputed in Recalc)
-    double mSatD       = 1.0;   // pre-gain drive factor
-    double mSatComp    = 1.0;   // level compensation (keeps -12dBFS signal at same level)
-    double mSatWetMid  = 0.0;
-    double mSatWetSide = 0.0;
+    double mSatD        = 1.0;   // pre-gain drive: D = 1 + t*7 (1→8)
+    double mSatWetMid   = 0.0;
+    double mSatWetSide  = 0.0;
+    double mMakeupGain  = 1.0;   // post-gain to compensate level loss from tanh compression
 };
 
 extern template void MasterEQ::Process<float >(float*, float*, int);
