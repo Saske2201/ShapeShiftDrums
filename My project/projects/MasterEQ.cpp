@@ -107,6 +107,7 @@ void MasterEQ::Reset()
     mMLS.Reset(); mMLO.Reset(); mMHI.Reset(); mMHS.Reset();
     mSLS.Reset(); mSLO.Reset(); mSHI.Reset(); mSHS.Reset();
     mHC1.Reset(); mHC2.Reset(); mHC3.Reset(); mHC4.Reset();
+    mMXO.Reset(); mSXO.Reset();
 }
 
 void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); Recalc(); }
@@ -117,11 +118,14 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 //   1. L/R → M/S encode
 //   2. Mid EQ  (4 biquads — kick/snare body, JST Tone Low character)
 //   3. Side EQ (4 biquads — stereo width, hi-hat air)
-//   4. Soft saturation on M and S (Saturn 2 Tube Warm harmonic generation)
-//      Mid:  drive=2.5, wet=18% @ t=1  — 2nd/3rd harmonic warmth on central content
-//      Side: drive=1.8, wet=10% @ t=1  — lighter, preserves spatial character
+//   4. Band-split soft saturation above 2 kHz on M and S channels
+//        low-band  = LP(signal, 2kHz, Butterworth)  — passes untouched
+//        high-band = signal − low-band              — tanh saturated
+//        output    = low-band + SoftSat(high-band)
+//      Mid:  drive=3.0, wet=25% @ t=1  — presence/harmonic warmth on kick/snare mids
+//      Side: drive=2.0, wet=15% @ t=1  — shimmer on hi-hats, preserves spatial depth
 //   5. M/S → L/R decode
-//   6. 48 dB/oct Butterworth HC  ~15811 Hz (rolls off sat artefacts + brightens)
+//   6. 48 dB/oct Butterworth HC  ~15811 Hz (rolls off sat artefacts)
 //   7. Makeup gain  -2.5 dB @ t=1
 //
 void MasterEQ::Recalc()
@@ -140,9 +144,13 @@ void MasterEQ::Recalc()
     mSHI.SetPeaking  (mSR, 5000.0,  4.0*t, 0.65);
     mSHS.SetHighShelf(mSR, 8000.0,  3.0*t, 0.80);
 
-    // Saturation wet amounts: mid gets more drive for kick/snare body warmth
-    mSatWetMid  = t * 0.18;
-    mSatWetSide = t * 0.10;
+    // Band-split saturation wet amounts (high-band only, above 2 kHz)
+    mSatWetMid  = t * 0.25;
+    mSatWetSide = t * 0.15;
+
+    // 2 kHz Butterworth LP crossover for band-split (fixed, doesn't scale with t)
+    mMXO.SetLowPass(mSR, 2000.0, 0.7071);
+    mSXO.SetLowPass(mSR, 2000.0, 0.7071);
 
     // Makeup gain (-2.5 dB at t=1)
     mMakeupGain = std::pow(10.0, (-2.5*t) / 20.0);
@@ -176,9 +184,9 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
 {
     if (!L || !R || nSamples <= 0) return;
 
-    // Thread-local M/S work buffers (avoid per-block allocation)
-    thread_local std::vector<double> mBuf, sBuf;
-    if ((int)mBuf.size() < nSamples) { mBuf.resize(nSamples); sBuf.resize(nSamples); }
+    // Thread-local work buffers (M/S channels + crossover temp)
+    thread_local std::vector<double> mBuf, sBuf, xBuf;
+    if ((int)mBuf.size() < nSamples) { mBuf.resize(nSamples); sBuf.resize(nSamples); xBuf.resize(nSamples); }
 
     // L/R → M/S encode  (normalised by 1/sqrt(2) to preserve loudness)
     constexpr double kRt2 = 1.0 / 1.41421356237309504880;
@@ -199,13 +207,25 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
     mSHI.ProcessMonoD(sBuf.data(), nSamples);
     mSHS.ProcessMonoD(sBuf.data(), nSamples);
 
-    // Tube-style soft saturation (Saturn 2 Tube Warm harmonic generation)
-    // Applied before HC so any generated high harmonics are naturally rolled off.
-    if (mSatWetMid > 1e-9 || mSatWetSide > 1e-9) {
-        const double wm = mSatWetMid, ws = mSatWetSide;
+    // Band-split saturation above 2 kHz (Saturn 2 Tube Warm multiband character)
+    // low-band = LP(x, 2kHz); high-band = x - low-band; out = low + SoftSat(high)
+    // LP + complement sum to flat, so wet=0 is transparent.
+    if (mSatWetMid > 1e-9) {
+        std::copy(mBuf.data(), mBuf.data() + nSamples, xBuf.data());
+        mMXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = low-band
+        const double wm = mSatWetMid;
         for (int i = 0; i < nSamples; ++i) {
-            mBuf[i] = SoftSat(mBuf[i], wm, 2.5);
-            sBuf[i] = SoftSat(sBuf[i], ws, 1.8);
+            const double hi = mBuf[i] - xBuf[i];           // high-band (> 2 kHz)
+            mBuf[i] = xBuf[i] + SoftSat(hi, wm, 3.0);
+        }
+    }
+    if (mSatWetSide > 1e-9) {
+        std::copy(sBuf.data(), sBuf.data() + nSamples, xBuf.data());
+        mSXO.ProcessMonoD(xBuf.data(), nSamples);          // xBuf = low-band
+        const double ws = mSatWetSide;
+        for (int i = 0; i < nSamples; ++i) {
+            const double hi = sBuf[i] - xBuf[i];           // high-band (> 2 kHz)
+            sBuf[i] = xBuf[i] + SoftSat(hi, ws, 2.0);
         }
     }
 

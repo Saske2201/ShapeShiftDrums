@@ -41,7 +41,10 @@ private:
     // High-cut: 48 dB/oct Butterworth applied to both channels after M/S decode
     Biquad mHC1, mHC2, mHC3, mHC4;
 
-    // Soft saturation wet amounts (0..1) for M/S channels
+    // 2 kHz crossover LPs for band-split saturation (M and S independent state)
+    Biquad mMXO, mSXO;
+
+    // Soft saturation wet amounts (0..1) for M/S high-band (above 2 kHz)
     double mSatWetMid  = 0.0;
     double mSatWetSide = 0.0;
 };
