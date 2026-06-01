@@ -2925,16 +2925,20 @@ public:
         {
             if (IsLearnArea(x))
             {
-                // Toggle learn mode for this row
+                // Toggle learn mode; redirty all note rows so previous one turns off
                 if (mPlug.GetLearnTag() == GetTag())
                     mPlug.SetLearnTag(-1);
                 else
                     mPlug.SetLearnTag(GetTag());
-                SetDirty(false);
+                if (GetUI())
+                    for (int t = kCtrlTagNoteKick; t <= kCtrlTagNoteHHOpen; ++t)
+                        if (auto* c = GetUI()->GetControlWithTag(t))
+                            c->SetDirty(false);
             }
             else if (mDragFromNote && GetUI())
             {
-                // Открыть текстовый ввод ноты
+                // Открыть текстовый ввод ноты; сбросить курсор заранее
+                if (GetUI()) GetUI()->SetMouseCursor(ECursor::ARROW);
                 const float noteX = mRECT.L + mRECT.W() * 0.85f;
                 const IRECT entryR(noteX + 2.f, mRECT.T + 2.f, mRECT.R - 4.f, mRECT.B - 2.f);
                 mEditStr = NoteToStr(mNote);
@@ -2945,6 +2949,7 @@ public:
 
     void OnTextEntryCompletion(const char* txt, int) override
     {
+        if (GetUI()) GetUI()->SetMouseCursor(ECursor::ARROW);
         if (!txt || !*txt) { SetDirty(false); return; }
         const int n = ParseMidiNote(txt);
         if (n >= 0)
