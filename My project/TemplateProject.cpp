@@ -7268,8 +7268,8 @@ void TemplateProject::OnParamChange(int paramIdx)
         //   атака слегка усиливается (+3 dB макс)
         //   sustain агрессивно срезается (-24 dB макс)
         // Левая сторона = soft: атака тише, хвост длиннее
-        mMasterTransShaper.SetTransientAmt(amt * 0.2);  // ±0.2 → ±3 dB attack
-        mMasterTransShaper.SetSustainAmt(-amt);          // противоположно → ±24 dB sustain
+        mMasterTransShaper.SetTransientAmt(amt * 0.30);  // ±0.30 → ±4.5 dB attack
+        mMasterTransShaper.SetSustainAmt(-amt * 0.50);   // ±0.50 → ±12 dB sustain
 #if IPLUG_EDITOR
         if (GetUI()) GetUI()->SetAllControlsDirty();
 #endif
