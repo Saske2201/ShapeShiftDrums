@@ -1449,6 +1449,11 @@ bool TemplateProject::SerializeState(IByteChunk& chunk) const
     putBool(mRideMuted);    putBool(mRideSolo);
     putBool(mChinaMuted);   putBool(mChinaSolo);
 
+    // === PARAMS (v2 — tagged so old saves skip this section) ===
+    const int kParamsMagic = 0x504D0002; // 'PM' + version 2
+    chunk.PutBytes(&kParamsMagic, (int)sizeof(int));
+    SerializeParams(chunk);
+
     return true;
 }
 
@@ -1577,6 +1582,15 @@ int TemplateProject::UnserializeState(const IByteChunk& chunk, int startPos)
         TryLoadSndlib_(loadPath);
     else
         ApplyNoteMap(); // путь неизвестен — обновим ноты; звуки загрузятся при открытии окна
+
+    // === PARAMS (v2) — backward-compat: old saves have no magic marker here, just skip ===
+    {
+        const int kParamsMagic = 0x504D0002;
+        int marker = 0;
+        int np = chunk.GetBytes(&marker, (int)sizeof(int), pos);
+        if (np > 0 && marker == kParamsMagic)
+            pos = UnserializeParams(chunk, np);
+    }
 
     return pos;
 }
@@ -7071,8 +7085,26 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
             }
             // ==============================================================================================================
 
-           
-
+            // Push solo/mute visual state after every LayoutUI (controls are recreated each time).
+            {
+                auto pushBtn = [&](const std::atomic<bool>& b, int tag) {
+                    if (auto* c = pGraphics->GetControlWithTag(tag))
+                        c->SetValue(b.load(std::memory_order_acquire) ? 1.0 : 0.0);
+                };
+                pushBtn(mKickMuted,   kCtrlTagKickMuteButton);    pushBtn(mKickSolo,   kCtrlTagKickSoloButton);
+                pushBtn(mSnareMuted,  kCtrlTagSnareMuteButton);   pushBtn(mSnareSolo,  kCtrlTagSnareSoloButton);
+                pushBtn(mTom1Muted,   kCtrlTagTom1MuteButton);    pushBtn(mTom1Solo,   kCtrlTagTom1SoloButton);
+                pushBtn(mTom2Muted,   kCtrlTagTom2MuteButton);    pushBtn(mTom2Solo,   kCtrlTagTom2SoloButton);
+                pushBtn(mTom3Muted,   kCtrlTagTom3MuteButton);    pushBtn(mTom3Solo,   kCtrlTagTom3SoloButton);
+                pushBtn(mCymMuted,    kCtrlTagCymbalsMuteButton);  pushBtn(mCymSolo,    kCtrlTagCymbalsSoloButton);
+                pushBtn(mRoomsMuted,  kCtrlTagRoomsMuteButton);   pushBtn(mRoomsSolo,  kCtrlTagRoomsSoloButton);
+                pushBtn(mHHMuted,     kCtrlTagHHMuteButton);      pushBtn(mHHSolo,     kCtrlTagHHSoloButton);
+                pushBtn(mCrashLMuted, kCtrlTagCrashLMuteButton);  pushBtn(mCrashLSolo, kCtrlTagCrashLSoloButton);
+                pushBtn(mCrashRMuted, kCtrlTagCrashRMuteButton);  pushBtn(mCrashRSolo, kCtrlTagCrashRSoloButton);
+                pushBtn(mSplashMuted, kCtrlTagSplashMuteButton);  pushBtn(mSplashSolo, kCtrlTagSplashSoloButton);
+                pushBtn(mRideMuted,   kCtrlTagRideMuteButton);    pushBtn(mRideSolo,   kCtrlTagRideSoloButton);
+                pushBtn(mChinaMuted,  kCtrlTagChinaMuteButton);   pushBtn(mChinaSolo,  kCtrlTagChinaSoloButton);
+            }
 
         };
 
@@ -7593,25 +7625,6 @@ void TemplateProject::OnUIOpen()
             ct->SetOpen(wasOpen, /*noAnim*/ true); // вернуть исходное состояние
         }
 
-    // Controls are recreated on every UI open — push current solo/mute state to restore button visuals.
-    {
-        auto push = [&](const std::atomic<bool>& b, int tag) {
-            SendControlValueFromDelegate(tag, b.load(std::memory_order_acquire) ? 1.0 : 0.0);
-        };
-        push(mKickMuted,   kCtrlTagKickMuteButton);    push(mKickSolo,   kCtrlTagKickSoloButton);
-        push(mSnareMuted,  kCtrlTagSnareMuteButton);   push(mSnareSolo,  kCtrlTagSnareSoloButton);
-        push(mTom1Muted,   kCtrlTagTom1MuteButton);    push(mTom1Solo,   kCtrlTagTom1SoloButton);
-        push(mTom2Muted,   kCtrlTagTom2MuteButton);    push(mTom2Solo,   kCtrlTagTom2SoloButton);
-        push(mTom3Muted,   kCtrlTagTom3MuteButton);    push(mTom3Solo,   kCtrlTagTom3SoloButton);
-        push(mCymMuted,    kCtrlTagCymbalsMuteButton);  push(mCymSolo,    kCtrlTagCymbalsSoloButton);
-        push(mRoomsMuted,  kCtrlTagRoomsMuteButton);   push(mRoomsSolo,  kCtrlTagRoomsSoloButton);
-        push(mHHMuted,     kCtrlTagHHMuteButton);      push(mHHSolo,     kCtrlTagHHSoloButton);
-        push(mCrashLMuted, kCtrlTagCrashLMuteButton);  push(mCrashLSolo, kCtrlTagCrashLSoloButton);
-        push(mCrashRMuted, kCtrlTagCrashRMuteButton);  push(mCrashRSolo, kCtrlTagCrashRSoloButton);
-        push(mSplashMuted, kCtrlTagSplashMuteButton);  push(mSplashSolo, kCtrlTagSplashSoloButton);
-        push(mRideMuted,   kCtrlTagRideMuteButton);    push(mRideSolo,   kCtrlTagRideSoloButton);
-        push(mChinaMuted,  kCtrlTagChinaMuteButton);   push(mChinaSolo,  kCtrlTagChinaSoloButton);
-    }
 }
 
 void TemplateProject::OnUIClose()
