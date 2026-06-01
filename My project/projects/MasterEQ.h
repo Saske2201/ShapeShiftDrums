@@ -27,10 +27,14 @@ private:
     double mSR  = 44100.0;
     double mAmt = 0.5;
 
-    Biquad mLowEQ;   // bell +2dB @50Hz — kick body
-    Biquad mLXover;  // 150Hz LP — sub-bass sat + kick transient detection
-    Biquad mXover;   // high shelf @1kHz — presence boost (console top-end)
-    Biquad mHC;      // high shelf @8kHz — air boost (overhead character)
+    Biquad mLowEQ;    // bell +2dB @50Hz — kick body
+    Biquad mLXover;   // 150Hz LP — sub-bass sat + kick transient detection
+    Biquad mSideBell; // side-only bell @70.309Hz — sub-bass stereo width
+    Biquad mMidBell;  // stereo bell @262.41Hz — bass body
+    Biquad mXover;    // high shelf @1kHz — presence boost (console top-end)
+    Biquad mHC;       // high shelf @8kHz — air boost (overhead character)
+    Biquad mHCut1;    // 24dB/oct HC @12604Hz — stage 1
+    Biquad mHCut2;    // 24dB/oct HC @12604Hz — stage 2
 
     double mLowD       = 1.0;   // low-band drive: 1→3
     double mLowWet     = 0.0;   // low-band wet: 0→18%
