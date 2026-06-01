@@ -19,6 +19,7 @@ private:
         void Reset() { z1L=z2L=z1R=z2R=0.0; }
         void SetLowPass(double fs, double f0, double Q);
         void SetPeak(double fs, double f0, double Q, double dBgain);
+        void SetHighShelf(double fs, double f0, double S, double dBgain);
     };
 
     void Recalc();
@@ -26,10 +27,10 @@ private:
     double mSR  = 44100.0;
     double mAmt = 0.5;
 
-    Biquad mLowEQ;   // bell +4dB @50Hz — bass boost (AW BG-Drums Tone Low)
-    Biquad mLXover;  // 150Hz LP — splits low band for kick/bass saturation
-    Biquad mXover;   // passthrough (reserved)
-    Biquad mHC;      // gentle high-cut: 20kHz→12kHz (warmth)
+    Biquad mLowEQ;   // bell +2dB @50Hz — kick body
+    Biquad mLXover;  // 150Hz LP — sub-bass sat + kick transient detection
+    Biquad mXover;   // high shelf @1kHz — presence boost (console top-end)
+    Biquad mHC;      // high shelf @8kHz — air boost (overhead character)
 
     double mLowD       = 1.0;   // low-band drive: 1→3
     double mLowWet     = 0.0;   // low-band wet: 0→18%

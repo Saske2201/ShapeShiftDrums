@@ -32,6 +32,23 @@ void MasterEQ::Biquad::SetPeak(double fs, double f0, double Q, double dBgain)
     a2 = (1.0 - alpha / A) / a0;
 }
 
+// Audio EQ Cookbook high-shelf (Bristow-Johnson)
+void MasterEQ::Biquad::SetHighShelf(double fs, double f0, double S, double dBgain)
+{
+    f0 = std::clamp(f0, 10.0, fs * 0.49); S = std::max(0.1, S);
+    const double A   = std::pow(10.0, dBgain / 40.0);
+    const double w0  = 2.0 * kPI * (f0 / fs);
+    const double cw  = std::cos(w0), sw = std::sin(w0);
+    const double alpha = sw * 0.5 * std::sqrt((A + 1.0/A) * (1.0/S - 1.0) + 2.0);
+    const double sqA2  = 2.0 * std::sqrt(A);
+    const double a0  = (A+1.0) - (A-1.0)*cw + sqA2*alpha;
+    b0 =  A * ((A+1.0) + (A-1.0)*cw + sqA2*alpha) / a0;
+    b1 = -2.0*A * ((A-1.0) + (A+1.0)*cw) / a0;
+    b2 =  A * ((A+1.0) + (A-1.0)*cw - sqA2*alpha) / a0;
+    a1 =  2.0 * ((A-1.0) - (A+1.0)*cw) / a0;
+    a2 = ((A+1.0) - (A-1.0)*cw - sqA2*alpha) / a0;
+}
+
 void MasterEQ::Prepare(double sr) { mSR = (sr > 0.0 ? sr : 44100.0); Recalc(); Reset(); }
 
 void MasterEQ::Reset()
@@ -44,19 +61,17 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 
 // Signal chain per sample:
 //
-//   LowEQ(50Hz bell)         — bass boost: 0→+4dB  [AW BG-Drums Tone Low]
+//   LowEQ(50Hz bell)         — kick body: 0→+2dB
 //   → LP(150Hz) split
 //       low  → tanh(low·Dlo) — sub-bass warmth: 0→18% wet, D 1→3
-//       low  → fast/slow env — kick transient boost: 0→+8dB on LP band
+//       low  → fast/slow env — kick transient boost: 0→+8dB
 //   → Full-band gentle sat   — tanh(x·Dhi): 0→12% wet, D 1→3
-//                              uniform warmth without HP boost (no sandiness)
-//   → HC(12–20kHz)           — warmth rolloff  [Saturn 2 IR]
-//   → makeupGain
+//   → Presence shelf @1kHz   — 0→+6dB  [console top-end character]
+//   → Air shelf @8kHz        — 0→+6dB  [overhead/room mic air]
+//   → makeupGain             — 0→−4.5dB (compensates HF boost)
 //
-// WHY no HP split: tanh on HP>2kHz produces odd harmonics (3rd, 5th) that land in
-// the harsh presence region (6–10kHz), creating "sandy" character.  A full-band
-// sat at low drive (D≤3) adds the same 2nd/3rd harmonics uniformly, which sounds
-// warm rather than gritty.
+// EQ character tuned to match reference spectral profile:
+//   normalized diff raw→ref: +4dB @1kHz, +6dB @4kHz, +8dB @8kHz, +12dB @15kHz
 //
 void MasterEQ::Recalc()
 {
@@ -70,16 +85,12 @@ void MasterEQ::Recalc()
     mSatD   = 1.0 + t * 2.0;                        // D: 1→3
     mSatWet = t * 0.12;                               // wet: 0→12%
 
-    mMakeupGain = std::pow(10.0, -2.0 * t / 20.0);  // 0→−2.0dB
+    mMakeupGain = std::pow(10.0, -4.5 * t / 20.0);  // 0→−4.5dB (compensates HF shelves)
 
-    mLowEQ.SetPeak(mSR, 50.0, 0.8, 4.0 * t);        // bell: 0→+4dB @50Hz, Q=0.8
-    mLXover.SetLowPass(mSR, 150.0, 0.7071);           // 150Hz LP (sub-bass only)
-
-    // mXover no longer used for HP split — set passthrough so state stays clean
-    mXover.b0 = 1.0; mXover.b1 = mXover.b2 = mXover.a1 = mXover.a2 = 0.0;
-
-    const double hcHz = 20000.0 * std::pow(12000.0 / 20000.0, t);
-    mHC.SetLowPass(mSR, hcHz, 0.7071);
+    mLowEQ.SetPeak(mSR, 50.0, 0.8, 2.0 * t);         // bell: 0→+2dB @50Hz, Q=0.8
+    mLXover.SetLowPass(mSR, 150.0, 0.7071);            // 150Hz LP (sub-bass only)
+    mXover.SetHighShelf(mSR, 1000.0, 0.7, 6.0 * t);   // presence: 0→+6dB @1kHz
+    mHC.SetHighShelf(mSR, 8000.0, 0.7, 6.0 * t);      // air: 0→+6dB @8kHz
 
     // Kick-band transient: fast/slow envelope on LP(150Hz) signal
     auto tc = [this](double ms) -> double {
@@ -102,9 +113,10 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
     const double Dhi = mSatD, whi = mSatWet;
     const double g   = mMakeupGain;
 
-    auto& leq = mLowEQ;
-    auto& lx  = mLXover;
-    auto& hc  = mHC;
+    auto& leq  = mLowEQ;
+    auto& lx   = mLXover;
+    auto& pres = mXover;   // presence shelf @1kHz
+    auto& air  = mHC;      // air shelf @8kHz
 
     for (int i = 0; i < nSamples; ++i)
     {
@@ -155,12 +167,20 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
             xR += (std::tanh(xR * Dhi) - xR) * whi;
         }
 
-        // Warmth HC rolloff + makeup gain
+        // Presence shelf @1kHz — console top-end character
         {
-            const double yL = hc.b0*xL + hc.z1L;
-            hc.z1L = hc.b1*xL - hc.a1*yL + hc.z2L; hc.z2L = hc.b2*xL - hc.a2*yL;
-            const double yR = hc.b0*xR + hc.z1R;
-            hc.z1R = hc.b1*xR - hc.a1*yR + hc.z2R; hc.z2R = hc.b2*xR - hc.a2*yR;
+            const double yL = pres.b0*xL + pres.z1L;
+            pres.z1L = pres.b1*xL - pres.a1*yL + pres.z2L; pres.z2L = pres.b2*xL - pres.a2*yL; xL = yL;
+            const double yR = pres.b0*xR + pres.z1R;
+            pres.z1R = pres.b1*xR - pres.a1*yR + pres.z2R; pres.z2R = pres.b2*xR - pres.a2*yR; xR = yR;
+        }
+
+        // Air shelf @8kHz + makeup gain — overhead/room character
+        {
+            const double yL = air.b0*xL + air.z1L;
+            air.z1L = air.b1*xL - air.a1*yL + air.z2L; air.z2L = air.b2*xL - air.a2*yL;
+            const double yR = air.b0*xR + air.z1R;
+            air.z1R = air.b1*xR - air.a1*yR + air.z2R; air.z2R = air.b2*xR - air.a2*yR;
             L[i] = (T)(yL * g);
             R[i] = (T)(yR * g);
         }
