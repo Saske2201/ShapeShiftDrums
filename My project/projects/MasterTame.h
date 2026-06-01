@@ -1,21 +1,27 @@
-// MasterTame.h  —  Waveshaper with harmonics 2-7 (Chebyshev)
+// MasterTame.h  —  Waveshaper with power-series harmonics 2-7
 //
 // Signal chain:
-//   Pre-LP  @8 kHz (1-pole)  — removes HF before the waveshaper to prevent
-//                               aliasing artifacts ("sand")
-//   Drive   × (1 + 3.5·t)   — pushes signal into the nonlinear zone
-//   xs = tanh(x·D)           — soft-clips to (-1,1); bounded input for Tn
-//   Harmonics 2-7            — Chebyshev polynomials T2..T7 applied to xs
-//                               each Tn is bounded to [-1,1] and gives exactly
-//                               the nth harmonic (tube-like amplitude decay)
-//   DC block @5 Hz           — removes DC shift from even-order harmonics
+//   Pre-LP  @12 kHz (1-pole)  — removes HF before the waveshaper to prevent
+//                                aliasing artifacts; 12kHz preserves more "air"
+//   Drive   × (1 + 3.5·t)    — pushes signal into the nonlinear zone
+//   xs = tanh(x·D)            — soft-clips to (-1,1)
+//   sat = xs / D              — normalized fundamental (unity small-signal gain)
+//   Harmonics 2-7             — power series xs², xs³, ... xs⁷
+//                                naturally zero at small amplitudes (no artefacts)
+//                                NOT divided by invD → audible harmonic content
+//   DC block @5 Hz            — removes DC shift from even-order powers
 //   Dry/wet  (1-t)·in + t·wet
 //
-// Harmonic weights at t=1 (natural tube-amp decay):
-//   H2=0.25  H3=0.15  H4=0.09  H5=0.055  H6=0.033  H7=0.020
+// Harmonic weights at t=1 (tube-like, even harmonics dominant):
+//   H2=0.15  H3=0.06  H4=0.08  H5=0.03  H6=0.04  H7=0.015
+//
+// Power-series harmonics vs Chebyshev:
+//   Chebyshev Tn → pure nth harmonic but Tn(0) = ±1 (subtracts signal at low levels!)
+//   xs^n        → harmonic-rich but xs^n → 0 as xs → 0 (correct, like real tube/tape)
 //
 // At t=0: fully transparent.
-// At t=1: heavy saturation + rich harmonic spectrum up to 7th.
+// At t=1: soft saturation + harmonic enrichment; output ≈ +1..3 dB louder than input
+//         at typical drum levels (saturation adds energy, not just compresses).
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -67,31 +73,33 @@ public:
             {
                 const double x = (double)io[ch][i];
 
-                // 1. Pre-LP: smooth out HF before saturation (limits aliasing)
+                // 1. Pre-LP: bandlimit before saturation to prevent aliasing
                 mPreLPy[ch] = lpA * mPreLPy[ch] + lpB * x;
                 const double xLP = mPreLPy[ch];
 
-                // 2. Soft-clip to (-1,1) — bounded input is required for Chebyshev Tn
+                // 2. Soft-clip to (-1,1) — bounded input for power-series terms
                 const double xs  = std::tanh(xLP * drive);
                 const double sat = xs * invD;   // unity small-signal gain
 
-                // 3. Chebyshev harmonics T2..T7
-                //    Tn(cos θ) = cos(nθ)  →  pure nth harmonic when xs = cos(θ)
-                //    Each Tn is bounded to [-1,1] when |xs| ≤ 1
-                const double xs2 = xs * xs;
+                // 3. Power-series harmonics 2-7
+                //    xs^n → 0 as xs → 0 (no artefacts at low levels)
+                //    NOT divided by invD so harmonics are at perceptual scale
+                const double xs2 = xs  * xs;
+                const double xs3 = xs2 * xs;
                 const double xs4 = xs2 * xs2;
+                const double xs5 = xs4 * xs;
                 const double xs6 = xs4 * xs2;
+                const double xs7 = xs6 * xs;
 
-                const double T2 = 2.0*xs2 - 1.0;
-                const double T3 = xs  * (4.0*xs2  - 3.0);
-                const double T4 = xs4 *  8.0 - xs2 * 8.0 + 1.0;
-                const double T5 = xs  * (xs4 * 16.0 - xs2 * 20.0 + 5.0);
-                const double T6 = xs6 * 32.0 - xs4 * 48.0 + xs2 * 18.0 - 1.0;
-                const double T7 = xs  * (xs6 * 64.0 - xs4 * 112.0 + xs2 * 56.0 - 7.0);
+                const double yWet = sat
+                                  + h2 * xs2   // ~2nd harmonic (even, warm)
+                                  + h3 * xs3   // ~3rd harmonic
+                                  + h4 * xs4   // ~4th harmonic (even)
+                                  + h5 * xs5   // ~5th harmonic
+                                  + h6 * xs6   // ~6th harmonic (even)
+                                  + h7 * xs7;  // ~7th harmonic
 
-                const double yWet = sat + (h2*T2 + h3*T3 + h4*T4 + h5*T5 + h6*T6 + h7*T7) * invD;
-
-                // 4. DC block: remove DC offset introduced by even-order harmonics
+                // 4. DC block: remove DC from even-power terms
                 const double dcOut = yWet - mDCx[ch] + dcR * mDCy[ch];
                 mDCx[ch] = yWet;
                 mDCy[ch] = dcOut;
@@ -111,15 +119,15 @@ private:
         // Drive: 1× (transparent) → 4.5× at full knob
         mDrive = 1.0 + 3.5 * t;
 
-        // Harmonic weights: tube-like amplitude decay (each ~60% of previous)
-        // H2=0.25  H3=0.15  H4=0.09  H5=0.055  H6=0.033  H7=0.020  (at t=1)
-        static constexpr double kHBase[6] = { 0.25, 0.15, 0.09, 0.055, 0.033, 0.020 };
+        // Harmonic weights: tube-like character (even harmonics dominant)
+        // xs^2,3,4,5,6,7 → roughly 2nd through 7th harmonic content
+        static constexpr double kH[6] = { 0.15, 0.06, 0.08, 0.03, 0.04, 0.015 };
         for (int i = 0; i < 6; ++i)
-            mH[i] = kHBase[i] * t;
+            mH[i] = kH[i] * t;
 
-        // Pre-LP at 8 kHz — 1-pole IIR
+        // Pre-LP at 12 kHz — 1-pole IIR (up from 8kHz, preserves more "air")
         {
-            const double a = std::exp(-2.0 * kPI * 8000.0 / mSR);
+            const double a = std::exp(-2.0 * kPI * 12000.0 / mSR);
             mPreLP_a = a;
             mPreLP_b = 1.0 - a;
         }
