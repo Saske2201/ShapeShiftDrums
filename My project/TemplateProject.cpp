@@ -7314,8 +7314,7 @@ void TemplateProject::OnParamChange(int paramIdx)
     if (paramIdx == kParamParallel)
     {
         const float v = (float)GetParam(kParamParallel)->GetNormalized(); // 0..1
-        mParallelComp.SetMix01(v);
-
+        // mParallelComp blend is done manually in ProcessBlock; only per-stem comps use SetMix01
         // === НОВОЕ: per-stem ===
         mParKick.SetMix01(v);
         mParSnare.SetMix01(v);
@@ -7588,11 +7587,7 @@ void TemplateProject::OnParamChange(int paramIdx)
     }
 
     case kParamParallel:
-    {
-        const float mix01 = (float)GetParam(kParamParallel)->Value(); // 0..1
-        mParallelComp.SetMix01(mix01);
-        break;
-    }
+        break; // blend handled in ProcessBlock; mParallelComp always runs fully wet
 
 
     default:
@@ -7746,6 +7741,7 @@ void TemplateProject::OnReset()
 
     mParallelComp.Prepare(sr);
     mParallelComp.SetDrumPreset();
+    mParallelComp.SetMix01(1.0f); // always fully wet; blending done manually in ProcessBlock
 
     mMasterTransShaper.Prepare(sr);
 
@@ -8412,18 +8408,48 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
         mMixR[s] = (sample)softClip(r);
     }
 
-    // 15) MasterEQ / TransShaper / ParallelComp — only when mix goes to main out
-    // In multi-out mode, per-stem EQ instances (mEQKick etc.) already applied MasterEQ to each stem.
+    // 15) Master chain: TransShaper → EQ → Tame → split → [DRY: Glue] ‖ [WET: ParallelComp] → MIX blend
+    // In multi-out mode, per-stem processing is done above; skip master chain.
     if (routeMixToMain)
     {
+        // Sequential
         mMasterTransShaper.Process(mMixL.data(), mMixR.data(), nFrames);
         mMasterEQ.Process(mMixL.data(), mMixR.data(), nFrames);
-        mParallelComp.Process(mMixL.data(), mMixR.data(), nFrames);
+        {
+            sample* p[2] = { mMixL.data(), mMixR.data() };
+            mMasterTame.Process(p, nFrames, 2);
+        }
+
+        // Split: copy post-Tame signal to parallel (WET) path
+        static thread_local std::vector<sample> parWetL, parWetR;
+        if ((int)parWetL.size() < nFrames) parWetL.resize(nFrames);
+        if ((int)parWetR.size() < nFrames) parWetR.resize(nFrames);
+        std::copy(mMixL.begin(), mMixL.begin() + nFrames, parWetL.begin());
+        std::copy(mMixR.begin(), mMixR.begin() + nFrames, parWetR.begin());
+
+        // DRY path: Glue compressor
+        {
+            sample* p[2] = { mMixL.data(), mMixR.data() };
+            mMasterGlue.Process(p, nFrames, 2);
+        }
+
+        // WET path: Parallel compressor (runs fully wet; SetMix01(1.0) done in Prepare)
+        mParallelComp.Process(parWetL.data(), parWetR.data(), nFrames);
+
+        // Blend DRY (Glue) + WET (ParallelComp) by the Parallel knob
+        const float parMix = (float)GetParam(kParamParallel)->GetNormalized();
+        if (parMix > 0.f)
+        {
+            const float parDry = 1.f - parMix;
+            for (int s = 0; s < nFrames; ++s)
+            {
+                mMixL[s] = (sample)(parDry * (float)mMixL[s] + parMix * (float)parWetL[s]);
+                mMixR[s] = (sample)(parDry * (float)mMixR[s] + parMix * (float)parWetR[s]);
+            }
+        }
     }
 
-  
-
-    // 16) Вывод в мастер + MasterGlue/Tame
+    // 16) Output to master
     if (routeMixToMain && nOutChans >= 2 && outputs[0] && outputs[1])
     {
         const int Lm = 0, Rm = 1;
@@ -8432,10 +8458,6 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
             outputs[Lm][s] += (sample)((double)mMixL[s] * (double)gMaster);
             outputs[Rm][s] += (sample)((double)mMixR[s] * (double)gMaster);
         }
-
-        sample* masterPair[2] = { outputs[Lm], outputs[Rm] };
-        mMasterGlue.Process(masterPair, nFrames, 2);
-        mMasterTame.Process(masterPair, nFrames, 2);
     }
 
     // 17) Master meter
