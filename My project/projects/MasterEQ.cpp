@@ -54,7 +54,7 @@ void MasterEQ::Prepare(double sr) { mSR = (sr > 0.0 ? sr : 44100.0); Recalc(); R
 void MasterEQ::Reset()
 {
     mLowEQ.Reset(); mLXover.Reset(); mSideBell.Reset(); mMidBell.Reset();
-    mXover.Reset(); mHC.Reset(); mHCut1.Reset(); mHCut2.Reset();
+    mXover.Reset(); mHC.Reset(); mHCut1.Reset(); mHCut2.Reset(); mAirBell.Reset();
     mKickFEnvL = mKickFEnvR = mKickSEnvL = mKickSEnvR = 0.0;
 }
 
@@ -97,6 +97,7 @@ void MasterEQ::Recalc()
     const double hcHz = 20000.0 - 7396.0 * t;         // HC cutoff: 20kHz→12604Hz
     mHCut1.SetLowPass(mSR, hcHz, 1.015);               // 24dB/oct HC stage 1, Q=1.015
     mHCut2.SetLowPass(mSR, hcHz, 1.015);               // 24dB/oct HC stage 2, Q=1.015
+    mAirBell.SetPeak(mSR, 10156.0, 1.0, -1.5 * t);    // bell: 0→-1.5dB @10156Hz
 
     // Kick-band transient: fast/slow envelope on LP(150Hz) signal
     auto tc = [this](double ms) -> double {
@@ -220,8 +221,19 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
             mHCut2.z1L = mHCut2.b1*xL - mHCut2.a1*y2L + mHCut2.z2L; mHCut2.z2L = mHCut2.b2*xL - mHCut2.a2*y2L;
             const double y2R = mHCut2.b0*xR + mHCut2.z1R;
             mHCut2.z1R = mHCut2.b1*xR - mHCut2.a1*y2R + mHCut2.z2R; mHCut2.z2R = mHCut2.b2*xR - mHCut2.a2*y2R;
-            L[i] = (T)(y2L * g);
-            R[i] = (T)(y2R * g);
+            xL = y2L; xR = y2R;
+        }
+
+        // Bell @10156Hz -1.5dB trim + makeup gain
+        {
+            const double yL = mAirBell.b0*xL + mAirBell.z1L;
+            mAirBell.z1L = mAirBell.b1*xL - mAirBell.a1*yL + mAirBell.z2L;
+            mAirBell.z2L = mAirBell.b2*xL - mAirBell.a2*yL;
+            const double yR = mAirBell.b0*xR + mAirBell.z1R;
+            mAirBell.z1R = mAirBell.b1*xR - mAirBell.a1*yR + mAirBell.z2R;
+            mAirBell.z2R = mAirBell.b2*xR - mAirBell.a2*yR;
+            L[i] = (T)(yL * g);
+            R[i] = (T)(yR * g);
         }
     }
 }

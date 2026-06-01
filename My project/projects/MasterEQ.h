@@ -35,6 +35,7 @@ private:
     Biquad mHC;       // high shelf @8kHz — air boost (overhead character)
     Biquad mHCut1;    // 24dB/oct HC @12604Hz — stage 1
     Biquad mHCut2;    // 24dB/oct HC @12604Hz — stage 2
+    Biquad mAirBell;  // bell @10156Hz — -1.5dB trim after HC
 
     double mLowD       = 1.0;   // low-band drive: 1→3
     double mLowWet     = 0.0;   // low-band wet: 0→18%
