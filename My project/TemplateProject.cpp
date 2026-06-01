@@ -4385,45 +4385,45 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
                 CymbalSlideTrigger::MakeStateFromMenuTop(menuRectC, xShift, offOpen, cymW, cymH);
 
             // ========================================================================================================== KICK ROOM KNOB ==========================================================================================================
-            const IRECT KickRoomKnob = IRECT::MakeXYWH(696.f, 122.0f, 65.f, 65.f);
+            const IRECT KickRoomKnob = IRECT::MakeXYWH(696.f, 123.0f, 65.f, 65.f);
             auto* pKickRoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(KickRoomKnob, body, pointer, kParamKickRoom, -150.0, +150.0));
 
             // ========================================================================================================== SNARE ROOM KNOB ==========================================================================================================
-            const IRECT SnareRoomKnob = IRECT::MakeXYWH(825.f, 122.0f, 65.f, 65.f);
+            const IRECT SnareRoomKnob = IRECT::MakeXYWH(825.f, 123.0f, 65.f, 65.f);
             auto* pSnareRoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(SnareRoomKnob, body, pointer, kParamSnareRoom, -150.0, +150.0));
 
             // ========================================================================================================== TOM 1 ROOM KNOB ==========================================================================================================
-            const IRECT Tom1RoomKnob = IRECT::MakeXYWH(952.5f, 122.0f, 65.f, 65.f);
+            const IRECT Tom1RoomKnob = IRECT::MakeXYWH(952.5f, 123.0f, 65.f, 65.f);
             auto* pTom1RoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(Tom1RoomKnob, body, pointer, kParamTom1Room, -150.0, +150.0));
 
             // ========================================================================================================== TOM 2 ROOM KNOB ==========================================================================================================
-            const IRECT Tom2RoomKnob = IRECT::MakeXYWH(1079.3f, 122.0f, 65.f, 65.f);
+            const IRECT Tom2RoomKnob = IRECT::MakeXYWH(1079.3f, 123.0f, 65.f, 65.f);
             auto* pTom2RoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(Tom2RoomKnob, body, pointer, kParamTom2Room, -150.0, +150.0));
 
             // ========================================================================================================== TOM 3 ROOM KNOB ==========================================================================================================
-            const IRECT Tom3RoomKnob = IRECT::MakeXYWH(1207.f, 122.0f, 65.f, 65.f);
+            const IRECT Tom3RoomKnob = IRECT::MakeXYWH(1207.f, 123.0f, 65.f, 65.f);
             auto* pTom3RoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(Tom3RoomKnob, body, pointer, kParamTom3Room, -150.0, +150.0));
 
             // ========================================================================================================== CRASH L ROOM KNOB ==========================================================================================================
-            const IRECT CrashLRoomKnob = IRECT::MakeXYWH(762.3f, 233.1f, 65.f, 65.f);
+            const IRECT CrashLRoomKnob = IRECT::MakeXYWH(762.3f, 234.1f, 65.f, 65.f);
             auto* pCrashLRoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(CrashLRoomKnob, body, pointer, kParamCrashLRoom, -150.0, +150.0));
 
             // ========================================================================================================== CRASH R ROOM KNOB ==========================================================================================================
-            const IRECT CrashRRoomKnob = IRECT::MakeXYWH(890.f, 233.1f, 65.f, 65.f);
+            const IRECT CrashRRoomKnob = IRECT::MakeXYWH(890.f, 234.1f, 65.f, 65.f);
             auto* pCrashRRoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(CrashRRoomKnob, body, pointer, kParamCrashRRoom, -150.0, +150.0));
             
             // ========================================================================================================== CHINA ROOM KNOB ==========================================================================================================
-            const IRECT ChinaRoomKnob = IRECT::MakeXYWH(1270.5f, 233.1f, 65.f, 65.f); // подвинь при необходимости
+            const IRECT ChinaRoomKnob = IRECT::MakeXYWH(1270.5f, 234.1f, 65.f, 65.f); // подвинь при необходимости
             auto* pChinaRoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(ChinaRoomKnob, body, pointer, kParamChinaRoom, -150.0, +150.0));
             // ========================================================================================================== SPLASH ROOM KNOB ==========================================================================================================
-            const IRECT SplashRoomKnob = IRECT::MakeXYWH(1016.3f, 233.1f, 65.f, 65.f); // между CrashR и China
+            const IRECT SplashRoomKnob = IRECT::MakeXYWH(1016.3f, 234.1f, 65.f, 65.f); // между CrashR и China
             auto* pSplashRoomKnob = pGraphics->AttachControl(new CBodyPointerKnob(SplashRoomKnob, body, pointer, kParamSplashRoom, -150.0, +150.0));
             // ========================================================================================================== RIDE ROOM KNOB ==========================================================================================================
-            const IRECT RideRoomKnob = IRECT::MakeXYWH(1144.3f, 233.1f, 65.f, 65.f);
+            const IRECT RideRoomKnob = IRECT::MakeXYWH(1144.3f, 234.1f, 65.f, 65.f);
             auto* pRideRoomKnob = pGraphics->AttachControl(
                 new CBodyPointerKnob(RideRoomKnob, body, pointer, kParamRideRoom, -150.0, +150.0));
             // ========================================================================================================== HH ROOM KNOB ==========================================================================================================
-            const IRECT HHRoomKnob = IRECT::MakeXYWH(633.5f, 233.1f, 65.f, 65.f); // слева от Crash L
+            const IRECT HHRoomKnob = IRECT::MakeXYWH(633.5f, 234.1f, 65.f, 65.f); // слева от Crash L
             auto* pHHRoomKnob = pGraphics->AttachControl(
                 new CBodyPointerKnob(HHRoomKnob, body, pointer, kParamHihatRoom, -150.0, +150.0)
             );
