@@ -2804,6 +2804,8 @@ public:
         const int cur = mPlug.GetSampleNote(mGroup.c_str());
         if (cur >= 0) mNote = cur;
 
+        const bool learning = (mPlug.GetLearnTag() == GetTag());
+
         // Тонкий разделитель снизу строки
         g.DrawLine(IColor(45, 255, 255, 255),
                    mRECT.L + 6.f, mRECT.B - 1.f,
@@ -2813,15 +2815,36 @@ public:
         if (mIsOver)
             g.FillRect(IColor(20, 255, 255, 255), mRECT);
 
-        // Название инструмента (левые 85%)
-        const float noteX = mRECT.L + mRECT.W() * 0.85f;
+        // Layout constants
+        const float noteX   = mRECT.L + mRECT.W() * 0.85f;
+        const float learnR  = noteX - 2.f;
+        const float learnL  = learnR - 34.f;
+
+        // Название инструмента (до кнопки Learn)
         {
-            IRECT lr(mRECT.L + 1.f, mRECT.T, noteX - 4.f, mRECT.B);
+            IRECT lr(mRECT.L + 1.f, mRECT.T, learnL - 4.f, mRECT.B);
             IText t(22.f, IColor(255, 220, 220, 220), nullptr, EAlign::Near, EVAlign::Middle);
             g.DrawText(t, mLabel.c_str(), lr);
         }
 
-        // Блок ноты (правые 10%)
+        // Кнопка Learn
+        const IRECT learnBox(learnL, mRECT.T + 3.f, learnR, mRECT.B - 3.f);
+        const bool learnHov = mIsOver && mLearnHover;
+        const IColor learnBg = learning
+            ? IColor(230, 200, 60, 30)
+            : (learnHov ? IColor(200, 55, 80, 110) : IColor(160, 35, 50, 75));
+        g.FillRoundRect(learnBg, learnBox, 3.f);
+        g.DrawRoundRect(learning
+            ? IColor(220, 220, 100, 40)
+            : IColor(110, 100, 130, 170), learnBox, 3.f);
+        {
+            IText lt(10.f,
+                     learning ? IColor(255, 255, 220, 80) : IColor(200, 180, 190, 210),
+                     nullptr, EAlign::Center, EVAlign::Middle);
+            g.DrawText(lt, learning ? "●" : "LRN", learnBox);
+        }
+
+        // Блок ноты (правые 15%)
         const IRECT noteBox(noteX + 2.f, mRECT.T + 3.f, mRECT.R - 4.f, mRECT.B - 3.f);
         const IColor noteBg = mNoteHover
             ? IColor(210, 75, 100, 130)
@@ -2850,13 +2873,14 @@ public:
     {
         mIsOver = true;
         const bool nh = IsNoteArea(x);
-        if (nh != mNoteHover) { mNoteHover = nh; }
+        const bool lh = IsLearnArea(x);
+        if (nh != mNoteHover || lh != mLearnHover) { mNoteHover = nh; mLearnHover = lh; }
         if (GetUI()) GetUI()->SetMouseCursor((nh || mDragging) ? ECursor::SIZEWE : ECursor::ARROW);
         SetDirty(false);
     }
     void OnMouseOut() override
     {
-        mIsOver = false; mNoteHover = false; mDragging = false;
+        mIsOver = false; mNoteHover = false; mLearnHover = false; mDragging = false;
         if (GetUI()) GetUI()->SetMouseCursor(ECursor::ARROW);
         SetDirty(false);
     }
@@ -2897,13 +2921,25 @@ public:
     {
         mDragging = false;
 
-        // Если не было drag и клик попал в зону ноты → открыть ввод
-        if (!mDragged && mDragFromNote && GetUI())
+        if (!mDragged)
         {
-            const float noteX = mRECT.L + mRECT.W() * 0.85f;
-            const IRECT entryR(noteX + 2.f, mRECT.T + 2.f, mRECT.R - 4.f, mRECT.B - 2.f);
-            mEditStr = NoteToStr(mNote);
-            GetUI()->CreateTextEntry(*this, IText(14.f, COLOR_WHITE), entryR, mEditStr.c_str());
+            if (IsLearnArea(x))
+            {
+                // Toggle learn mode for this row
+                if (mPlug.GetLearnTag() == GetTag())
+                    mPlug.SetLearnTag(-1);
+                else
+                    mPlug.SetLearnTag(GetTag());
+                SetDirty(false);
+            }
+            else if (mDragFromNote && GetUI())
+            {
+                // Открыть текстовый ввод ноты
+                const float noteX = mRECT.L + mRECT.W() * 0.85f;
+                const IRECT entryR(noteX + 2.f, mRECT.T + 2.f, mRECT.R - 4.f, mRECT.B - 2.f);
+                mEditStr = NoteToStr(mNote);
+                GetUI()->CreateTextEntry(*this, IText(14.f, COLOR_WHITE), entryR, mEditStr.c_str());
+            }
         }
     }
 
@@ -2922,9 +2958,33 @@ public:
         SetDirty(false);
     }
 
+    void OnMsgFromDelegate(int msgTag, int dataSize, const void* pData) override
+    {
+        if (msgTag == kMsgTagLearnNote && dataSize == (int)sizeof(int) && pData)
+        {
+            const int note = *static_cast<const int*>(pData);
+            if (note >= 0 && note <= 127)
+            {
+                mNote = note;
+                mPlug.SetSampleNote(mGroup.c_str(), note);
+                if (GetUI())
+                    if (auto* pb = GetUI()->GetControlWithTag(kCtrlTagMappingPresetBtn))
+                        pb->SetDirty(false);
+            }
+        }
+        SetDirty(false);
+    }
+
     void SyncNote() { mNote = mPlug.GetSampleNote(mGroup.c_str()); SetDirty(false); }
 
 private:
+    bool IsLearnArea(float x) const
+    {
+        const float noteX  = mRECT.L + mRECT.W() * 0.85f;
+        const float learnR = noteX - 2.f;
+        const float learnL = learnR - 34.f;
+        return x >= learnL && x < learnR;
+    }
     bool IsNoteArea(float x) const { return x >= mRECT.L + mRECT.W() * 0.85f; }
 
     std::string      mLabel;
@@ -2934,6 +2994,7 @@ private:
     std::string      mEditStr;
     bool             mIsOver        = false;
     bool             mNoteHover     = false;
+    bool             mLearnHover    = false;
     bool             mDragged       = false;
     bool             mDragging      = false;
     bool             mDragFromNote  = false;
@@ -7954,6 +8015,18 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
 
         if (msg.StatusMsg() == iplug::IMidiMsg::kNoteOn && msg.Velocity() > 0)
         {
+#if IPLUG_EDITOR
+            // MIDI learn: if a NoteSelectorControl is waiting, deliver the note to it
+            {
+                const int learnTag = mLearnTag.exchange(-1, std::memory_order_acq_rel);
+                if (learnTag >= 0 && IsUIReady() && HasControlSafe(learnTag))
+                {
+                    const int learnNote = msg.NoteNumber();
+                    SendControlMsgFromDelegate(learnTag, kMsgTagLearnNote,
+                                              sizeof(int), &learnNote);
+                }
+            }
+#endif
             const float vel01 = msg.Velocity() / 127.f;
             static_cast<DrumKit*>(mKitOpaque)->Trigger(msg.NoteNumber(), vel01);
 

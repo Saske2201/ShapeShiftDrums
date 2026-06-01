@@ -278,7 +278,7 @@ enum EMsgTags
 	kMsgTagPadTrigger = 0,
 	kMsgTagNotePulse = 1,
 	kMsgTagMeterHot = 2,
-
+	kMsgTagLearnNote = 3,
 };
 
 using namespace iplug;
@@ -350,6 +350,10 @@ public:
 	std::string GetCustomPresetName(int idx) const;
 	bool HasCustomPresets() const { return !mCustomPresets.empty(); }
 
+	// MIDI learn — UI sets the active tag; DSP routes next NoteOn to it
+	void SetLearnTag(int tag) { mLearnTag.store(tag, std::memory_order_relaxed); }
+	int  GetLearnTag()  const { return mLearnTag.load(std::memory_order_relaxed); }
+
 #if IPLUG_DSP
 	void OnReset() override;
 	void ProcessMidiMsg(const IMidiMsg& msg) override;
@@ -417,6 +421,7 @@ private:
 	int    mFileSR = 0;
 	double mReadPos = -1.0; // <0 = не играет
 	double mIncr = 1.0;     // шаг чтения (ratio SR)
+	std::atomic<int>  mLearnTag{ -1 };
 	std::atomic<bool> mPadStart{ false };
 	std::vector<sample> mTmpL, mTmpR;
 	std::atomic<bool> mUIReady{ false };
