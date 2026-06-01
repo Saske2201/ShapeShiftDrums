@@ -38,11 +38,15 @@ private:
     double mMakeupGain = 1.0;
 
     // Kick-band transient enhancement (fast/slow envelope on LP signal)
-    double mKickFAtk    = 0.0, mKickFRel    = 0.0;
-    double mKickSAtk    = 0.0, mKickSRel    = 0.0;
+    double mKickFAtk    = 0.0;
+    double mKickFRel    = 0.0;
+    double mKickSAtk    = 0.0;
+    double mKickSRel    = 0.0;
     double mKickBoostDB = 0.0;
-    double mKickFEnvL   = 0.0, mKickFEnvR   = 0.0;
-    double mKickSEnvL   = 0.0, mKickSEnvR   = 0.0;
+    double mKickFEnvL   = 0.0;
+    double mKickFEnvR   = 0.0;
+    double mKickSEnvL   = 0.0;
+    double mKickSEnvR   = 0.0;
 };
 
 extern template void MasterEQ::Process<float >(float*, float*, int);
