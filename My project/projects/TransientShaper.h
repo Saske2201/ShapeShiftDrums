@@ -82,7 +82,7 @@ public:
         // Фиксированные настройки (не зависят от параметров)
         const double knee      = 0.40;
         const double sensScale = 1.1;
-        const double aComp     = time2coef(520.0);
+        const double aComp     = time2coef(150.0);  // быстрый трекинг → мало копит при смене ручки
         const double clipT     = 0.985;
         const double gMin = 0.20, gMax = 8.0;
         const double sc   = mSmoothCoef;
@@ -151,7 +151,7 @@ public:
             mMeanOut += (outMag - mMeanOut) * aComp;
             const double tgt = (mMeanOut > 1e-6 ? mMeanIn / mMeanOut : 1.0);
             mComp += (tgt - mComp) * aComp;
-            mComp = std::clamp(mComp, 0.1, 10.0); // страховка от разгона авто-гейна
+            mComp = std::clamp(mComp, 0.80, 1.25); // ±2 dB max → нет большого скачка при смене ручки
             gL *= mComp; gR *= mComp;
 
             // применяем к look-ahead + мягкий клип
