@@ -2818,7 +2818,7 @@ public:
         // Layout constants
         const float noteX   = mRECT.L + mRECT.W() * 0.85f;
         const float learnR  = noteX - 2.f;
-        const float learnL  = learnR - 34.f;
+        const float learnL  = learnR - 46.f;
 
         // Название инструмента (до кнопки Learn)
         {
@@ -2841,7 +2841,7 @@ public:
             IText lt(10.f,
                      learning ? IColor(255, 255, 220, 80) : IColor(200, 180, 190, 210),
                      nullptr, EAlign::Center, EVAlign::Middle);
-            g.DrawText(lt, learning ? "●" : "LRN", learnBox);
+            g.DrawText(lt, learning ? "●" : "LEARN", learnBox);
         }
 
         // Блок ноты (правые 15%)
@@ -2920,6 +2920,8 @@ public:
     void OnMouseUp(float x, float, const IMouseMod&) override
     {
         mDragging = false;
+        // Cursor: return to ARROW unless still hovering note area
+        if (GetUI()) GetUI()->SetMouseCursor(IsNoteArea(x) ? ECursor::SIZEWE : ECursor::ARROW);
 
         if (!mDragged)
         {
@@ -2987,7 +2989,7 @@ private:
     {
         const float noteX  = mRECT.L + mRECT.W() * 0.85f;
         const float learnR = noteX - 2.f;
-        const float learnL = learnR - 34.f;
+        const float learnL = learnR - 46.f;
         return x >= learnL && x < learnR;
     }
     bool IsNoteArea(float x) const { return x >= mRECT.L + mRECT.W() * 0.85f; }
@@ -3777,6 +3779,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
             pGraphics->AttachPanelBackground(COLOR_BLACK);
             pGraphics->LoadFont("Roboto-Regular", ROBOTO_FN);
             pGraphics->AttachControl(new ITextEntryControl());
+            pGraphics->EnableMouseOver(true);
 
  
 
