@@ -1,8 +1,12 @@
 // MasterTame.h
+// Saturation with AW BG-Drums spectral character.
+// At knob=1.0 the effect is ~150% of the AW BG-Drums 100% preset:
+//   +3.5 dB body @200 Hz, -0.9 dB tilt @600 Hz,
+//   -3.5 dB scoop @2 kHz,  +0.75 dB air @7 kHz
+// followed by tanh soft-clip.
 #pragma once
 #include <algorithm>
 #include <cmath>
-#include <array>
 
 class MasterTame
 {
@@ -10,150 +14,107 @@ public:
     void Prepare(double sr)
     {
         mSR = (sr > 0.0 ? sr : 44100.0);
+        Recalc();
         Reset();
-        UpdateCoeffs_();
     }
 
     void Reset()
     {
-        for (int ch = 0; ch < 2; ++ch) {
-            mHP_x1[ch] = 0.0f; mHP_y1[ch] = 0.0f;
-            mLP_y1[ch] = 0.0f;
-            mLowLP_y1[ch] = 0.0f;
-        }
+        for (int b = 0; b < 4; ++b) mBand[b].Reset();
     }
 
-    // norm in [0..1] — «сколько тепла»
+    // norm in [0..1]
     void SetAmount(double norm)
     {
-        const double x = std::clamp(norm, 0.0, 1.0);
-
-        mDrive = 1.0 + 9.0 * x;                 // шейпер
-        mLowMix = (float)(0.25 * x);             // низ чуть жирнее
-        mPostLPHz = std::clamp(20000.0 - x * 12000.0, 3000.0, 20000.0); // "air" срез
-        mPreHPHz = 20.0 + 20.0 * x;             // подчистить саб
-        mMakeup = (float)DBToLin(2.0 * x);       // небольшая компенсация
-        mWet = (float)x;                          // dry/wet
-
-        UpdateCoeffs_();
+        mT = std::clamp(norm, 0.0, 1.0);
+        Recalc();
     }
 
-    // io: [0]=L, [1]=R
-    template<typename sample_t>
-    void Process(sample_t** io, int nFrames, int nCh = 2)
+    template<typename S>
+    void Process(S** io, int nFrames, int nCh = 2)
     {
         if (nCh < 2 || !io || !io[0] || !io[1]) return;
 
-        const float drive = (float)mDrive;
-        const float wet = std::clamp(mWet, 0.0f, 1.0f);
-        const float mk = mMakeup;
+        const double drive  = mDrive;
+        const double invD   = 1.0 / drive;
+        const double wet    = mT;
+        const double dry    = 1.0 - wet;
+        const double makeup = mMakeup;
 
         for (int i = 0; i < nFrames; ++i)
         {
             for (int ch = 0; ch < 2; ++ch)
             {
-                const float xin = (float)io[ch][i];
+                const double x = (double)io[ch][i];
 
-                // 1) Pre-HP
-                const float hp = HP1_(xin, ch);
+                // EQ spectral shaping
+                double y = mBand[0].Process(x, ch);
+                y = mBand[1].Process(y, ch);
+                y = mBand[2].Process(y, ch);
+                y = mBand[3].Process(y, ch);
 
-                // 2) Небольшой «низовой» смешивающий LP
-                const float lowLP = LowLP_(hp, ch);
-                const float tilt = hp + mLowMix * (lowLP - hp);
+                // Soft-clip: tanh(x*d)/d вЂ” unity small-signal gain, soft ceiling
+                y = std::tanh(y * drive) * invD * makeup;
 
-                // 3) Мягкий шейпер
-                float y = SoftSat_(tilt, drive);
-
-                // 4) Post-LP (снять жёсткость верхов)
-                y = LP1_(y, ch);
-
-                // 5) Make-up + Dry/Wet
-                const float comp = y * mk;
-                io[ch][i] = (sample_t)((1.0f - wet) * xin + wet * comp);
+                io[ch][i] = (S)(dry * x + wet * y);
             }
         }
     }
 
 private:
-    static inline double DBToLin(double dB) { return std::pow(10.0, dB / 20.0); }
-
-    // ===== 1-полюсные фильтры через exp(-2? f/Fs) =====
-    void UpdateCoeffs_()
+    struct Biquad
     {
-        constexpr double kPI = 3.14159265358979323846;
+        double b0=1, b1=0, b2=0, a1=0, a2=0;
+        double z1[2]={}, z2[2]={};
 
-        auto a1_from_fc = [&](double fc) -> float {
-            const double fc_clamped = std::max(1.0, fc);
-            const double a1 = std::exp(-2.0 * kPI * fc_clamped / mSR); // 0..1
-            return (float)a1;
-            };
-        auto b0_from_a1 = [&](float a1) -> float {
-            return (float)(1.0f - a1);
-            };
+        void Reset() { z1[0]=z2[0]=z1[1]=z2[1]=0.0; }
 
-        // HP: y[n] = a1*y[n-1] + a1*(x[n] - x[n-1])
-        mHP_a1 = a1_from_fc(mPreHPHz);
-        mHP_b1 = mHP_a1; // множитель для (x - x1)
+        double Process(double x, int ch)
+        {
+            const double y = b0*x + z1[ch];
+            z1[ch] = b1*x - a1*y + z2[ch];
+            z2[ch] = b2*x - a2*y;
+            return y;
+        }
 
-        // LP (post-air): y[n] = a1*y[n-1] + b0*x[n]
-        mLP_a1 = a1_from_fc(mPostLPHz);
-        mLP_b0 = b0_from_a1(mLP_a1);
+        void SetPeak(double fs, double f0, double Q, double dBgain)
+        {
+            constexpr double kPI = 3.14159265358979323846;
+            f0 = std::clamp(f0, 1.0, fs * 0.499);
+            Q  = std::max(Q, 0.1);
+            const double A     = std::pow(10.0, dBgain / 40.0);
+            const double w0    = 2.0 * kPI * f0 / fs;
+            const double cw    = std::cos(w0);
+            const double alpha = std::sin(w0) / (2.0 * Q);
+            const double ia0   = 1.0 / (1.0 + alpha / A);
+            b0 = (1.0 + alpha * A) * ia0;
+            b1 = -2.0 * cw         * ia0;
+            b2 = (1.0 - alpha * A) * ia0;
+            a1 = -2.0 * cw         * ia0;
+            a2 = (1.0 - alpha / A) * ia0;
+        }
+    };
 
-        // НЧ LP для псевдо low-shelf (фикс. 150 Гц)
-        mLowLP_a1 = a1_from_fc(150.0);
-        mLowLP_b0 = b0_from_a1(mLowLP_a1);
+    void Recalc()
+    {
+        const double t = mT;
+
+        // Spectral shaping вЂ” linear scaling with t
+        mBand[0].SetPeak(mSR, 200.0,  0.60,  3.5  * t);   // bass body
+        mBand[1].SetPeak(mSR, 600.0,  1.50, -0.9  * t);   // upper-mid tilt
+        mBand[2].SetPeak(mSR, 2000.0, 0.80, -3.5  * t);   // upper-mid scoop
+        mBand[3].SetPeak(mSR, 7000.0, 1.00,  0.75 * t);   // air
+
+        // Soft-clip drive: 1.0 (linear) в†’ 2.5 at full knob
+        mDrive = 1.0 + 1.5 * t;
+
+        // Makeup: compensate drive-induced gain reduction at moderate levels (~+1.5 dB at t=1)
+        mMakeup = std::pow(10.0, 1.5 * t / 20.0);
     }
 
-    inline float HP1_(float x, int ch)
-    {
-        // y = a1*y1 + a1*(x - x1)
-        const float y = mHP_a1 * mHP_y1[ch] + mHP_b1 * (x - mHP_x1[ch]);
-        mHP_x1[ch] = x; mHP_y1[ch] = y;
-        return y;
-    }
-
-    inline float LP1_(float x, int ch)
-    {
-        const float y = mLP_a1 * mLP_y1[ch] + mLP_b0 * x;
-        mLP_y1[ch] = y;
-        return y;
-    }
-
-    inline float LowLP_(float x, int ch)
-    {
-        const float y = mLowLP_a1 * mLowLP_y1[ch] + mLowLP_b0 * x;
-        mLowLP_y1[ch] = y;
-        return y;
-    }
-
-    // Нормированный tanh + лёгкая асимметрия
-    static inline float SoftSat_(float x, float drive)
-    {
-        const float d = std::max(1.0f, drive);
-        const float sat = std::tanh(x * d) / std::tanh(d);
-        const float asym = 0.08f; // тонкая чётная гармоника
-        return sat + asym * (sat * sat) * (sat >= 0.f ? 1.f : -1.f);
-    }
-
-private:
-    double mSR = 44100.0;
-
-    // Параметры
-    double mDrive = 1.0;
-    double mPreHPHz = 20.0;
-    double mPostLPHz = 20000.0;
-    float  mLowMix = 0.0f;   // 0..0.25
-    float  mMakeup = 1.0f;
-    float  mWet = 0.0f;
-
-    // Состояние
-    float mHP_x1[2] = { 0,0 };
-    float mHP_y1[2] = { 0,0 };
-    float mLP_y1[2] = { 0,0 };
-    float mLowLP_y1[2] = { 0,0 };
-
-    // Коэф-ты
-    float mHP_a1 = 0.0f, mHP_b1 = 0.0f;
-    float mLP_a1 = 0.0f, mLP_b0 = 0.0f;
-    float mLowLP_a1 = 0.0f, mLowLP_b0 = 0.0f;
+    double mSR     = 44100.0;
+    double mT      = 0.0;
+    double mDrive  = 1.0;
+    double mMakeup = 1.0;
+    Biquad mBand[4];
 };
