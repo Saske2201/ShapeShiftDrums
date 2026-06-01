@@ -1,8 +1,11 @@
 // MasterTame.h
-// Decapitator Style T / Drive 4 spectral character:
-//   +4 dB low shelf @60 Hz  — Telefunken V72 transformer resonance
-//   -7.5 dB high shelf @1.5 kHz (S=0.3, very gradual) — tube/output HF rolloff
-// followed by tanh soft-clip.
+// Spectral character matched to AW BG-Drums saturation ~150% (measured from audio).
+// At knob = 1.0:
+//   Low shelf  -8.5 dB @ 90 Hz   (S=0.50) — deep sub cut
+//   Bell       +3.5 dB @ 300 Hz  (Q=1.20) — body boost
+//   High shelf +3.5 dB @ 8 kHz   (S=0.70) — presence/HF extension
+//   High shelf +6.0 dB @ 14 kHz  (S=0.80) — air / harmonic extension
+// All bands scale linearly with knob. Tanh adds real harmonic content.
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -19,8 +22,7 @@ public:
 
     void Reset()
     {
-        mBand[0].Reset();
-        mBand[1].Reset();
+        for (int b = 0; b < 4; ++b) mBand[b].Reset();
     }
 
     // norm in [0..1]
@@ -37,7 +39,6 @@ public:
 
         const double drive  = mDrive;
         const double invD   = 1.0 / drive;
-        const double makeup = mMakeup;
 
         for (int i = 0; i < nFrames; ++i)
         {
@@ -46,7 +47,9 @@ public:
                 double y = (double)io[ch][i];
                 y = mBand[0].Process(y, ch);
                 y = mBand[1].Process(y, ch);
-                y = std::tanh(y * drive) * invD * makeup;
+                y = mBand[2].Process(y, ch);
+                y = mBand[3].Process(y, ch);
+                y = std::tanh(y * drive) * invD;
                 io[ch][i] = (S)y;
             }
         }
@@ -68,6 +71,24 @@ private:
             return y;
         }
 
+        // Audio EQ Cookbook — peak/bell
+        void SetPeak(double fs, double f0, double Q, double dBgain)
+        {
+            constexpr double kPI = 3.14159265358979323846;
+            f0 = std::clamp(f0, 1.0, fs * 0.499);
+            Q  = std::max(Q, 0.1);
+            const double A     = std::pow(10.0, dBgain / 40.0);
+            const double w0    = 2.0 * kPI * f0 / fs;
+            const double cw    = std::cos(w0);
+            const double alpha = std::sin(w0) / (2.0 * Q);
+            const double ia0   = 1.0 / (1.0 + alpha / A);
+            b0 = (1.0 + alpha * A) * ia0;
+            b1 = -2.0 * cw         * ia0;
+            b2 = (1.0 - alpha * A) * ia0;
+            a1 = -2.0 * cw         * ia0;
+            a2 = (1.0 - alpha / A) * ia0;
+        }
+
         // Audio EQ Cookbook — low shelf
         void SetLowShelf(double fs, double f0, double S, double dBgain)
         {
@@ -77,15 +98,15 @@ private:
             const double A     = std::pow(10.0, dBgain / 40.0);
             const double w0    = 2.0 * kPI * f0 / fs;
             const double cw    = std::cos(w0);
-            const double sw    = std::sin(w0);
             const double sqA2  = 2.0 * std::sqrt(A);
-            const double alpha = sw * 0.5 * std::sqrt((A + 1.0/A) * (1.0/S - 1.0) + 2.0);
-            const double a0inv = 1.0 / ((A+1.0) + (A-1.0)*cw + sqA2*alpha);
-            b0 =  A * ((A+1.0) - (A-1.0)*cw + sqA2*alpha) * a0inv;
-            b1 =  2.0*A * ((A-1.0) - (A+1.0)*cw)          * a0inv;
-            b2 =  A * ((A+1.0) - (A-1.0)*cw - sqA2*alpha) * a0inv;
-            a1 = -2.0 * ((A-1.0) + (A+1.0)*cw)            * a0inv;
-            a2 =        ((A+1.0) + (A-1.0)*cw - sqA2*alpha) * a0inv;
+            const double alpha = std::sin(w0) * 0.5 *
+                                 std::sqrt((A + 1.0/A) * (1.0/S - 1.0) + 2.0);
+            const double a0    = (A+1.0) + (A-1.0)*cw + sqA2*alpha;
+            b0 =  A * ((A+1.0) - (A-1.0)*cw + sqA2*alpha) / a0;
+            b1 =  2.0*A * ((A-1.0) - (A+1.0)*cw)          / a0;
+            b2 =  A * ((A+1.0) - (A-1.0)*cw - sqA2*alpha) / a0;
+            a1 = -2.0 * ((A-1.0) + (A+1.0)*cw)            / a0;
+            a2 =        ((A+1.0) + (A-1.0)*cw - sqA2*alpha) / a0;
         }
 
         // Audio EQ Cookbook — high shelf
@@ -97,15 +118,15 @@ private:
             const double A     = std::pow(10.0, dBgain / 40.0);
             const double w0    = 2.0 * kPI * f0 / fs;
             const double cw    = std::cos(w0);
-            const double sw    = std::sin(w0);
             const double sqA2  = 2.0 * std::sqrt(A);
-            const double alpha = sw * 0.5 * std::sqrt((A + 1.0/A) * (1.0/S - 1.0) + 2.0);
-            const double a0inv = 1.0 / ((A+1.0) - (A-1.0)*cw + sqA2*alpha);
-            b0 =  A * ((A+1.0) + (A-1.0)*cw + sqA2*alpha) * a0inv;
-            b1 = -2.0*A * ((A-1.0) + (A+1.0)*cw)          * a0inv;
-            b2 =  A * ((A+1.0) + (A-1.0)*cw - sqA2*alpha) * a0inv;
-            a1 =  2.0 * ((A-1.0) - (A+1.0)*cw)            * a0inv;
-            a2 =        ((A+1.0) - (A-1.0)*cw - sqA2*alpha) * a0inv;
+            const double alpha = std::sin(w0) * 0.5 *
+                                 std::sqrt((A + 1.0/A) * (1.0/S - 1.0) + 2.0);
+            const double a0    = (A+1.0) - (A-1.0)*cw + sqA2*alpha;
+            b0 =  A * ((A+1.0) + (A-1.0)*cw + sqA2*alpha) / a0;
+            b1 = -2.0*A * ((A-1.0) + (A+1.0)*cw)          / a0;
+            b2 =  A * ((A+1.0) + (A-1.0)*cw - sqA2*alpha) / a0;
+            a1 =  2.0 * ((A-1.0) - (A+1.0)*cw)            / a0;
+            a2 =        ((A+1.0) - (A-1.0)*cw - sqA2*alpha) / a0;
         }
     };
 
@@ -113,22 +134,18 @@ private:
     {
         const double t = mT;
 
-        // Decapitator Style T / Drive 4 spectral shape
-        // Low shelf: +4 dB transformer resonance boost below ~60 Hz
-        mBand[0].SetLowShelf (mSR,   60.0, 0.70,  4.0 * t);
-        // High shelf: -7.5 dB very gradual tube HF rolloff starting ~1.5 kHz
-        mBand[1].SetHighShelf(mSR, 1500.0, 0.30, -7.5 * t);
+        // Measured from AW BG-Drums ~150% vs raw:
+        mBand[0].SetLowShelf (mSR,    90.0, 0.50, -8.5 * t);  // deep sub cut
+        mBand[1].SetPeak     (mSR,   300.0, 1.20, +3.5 * t);  // body boost
+        mBand[2].SetHighShelf(mSR,  8000.0, 0.70, +3.5 * t);  // HF presence
+        mBand[3].SetHighShelf(mSR, 14000.0, 0.80, +6.0 * t);  // air / harmonics
 
-        // Drive 4 style: moderate-strong saturation
-        mDrive = 1.0 + 2.5 * t;
-
-        // Makeup: recover mid-level loss from the HF shelf (~+2.5 dB at full knob)
-        mMakeup = std::pow(10.0, 2.5 * t / 20.0);
+        // Drive: tanh(x*d)/d — unity small-signal gain, adds real harmonic content
+        mDrive = 1.0 + 2.0 * t;
     }
 
-    double mSR     = 44100.0;
-    double mT      = 0.0;
-    double mDrive  = 1.0;
-    double mMakeup = 1.0;
-    Biquad mBand[2];
+    double mSR   = 44100.0;
+    double mT    = 0.0;
+    double mDrive = 1.0;
+    Biquad mBand[4];
 };
