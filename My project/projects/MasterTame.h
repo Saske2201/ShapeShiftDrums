@@ -1,11 +1,17 @@
-// MasterTame.h
-// Spectral character matched to AW BG-Drums saturation ~150% (measured from audio).
-// At knob = 1.0:
-//   Low shelf  -8.5 dB @ 90 Hz   (S=0.50) — deep sub cut
-//   Bell       +3.5 dB @ 300 Hz  (Q=1.20) — body boost
-//   High shelf +3.5 dB @ 8 kHz   (S=0.70) — presence/HF extension
-//   High shelf +6.0 dB @ 14 kHz  (S=0.80) — air / harmonic extension
-// All bands scale linearly with knob. Tanh adds real harmonic content.
+// MasterTame.h  —  Pure waveshaper, no static EQ
+//
+// Signal chain:
+//   Pre-LP  @8 kHz (1-pole)  — removes HF before the waveshaper to prevent
+//                               aliasing artifacts ("sand")
+//   Drive   × (1 + 3.5·t)   — pushes signal into the nonlinear zone
+//   Shaper  tanh(x·D)/D      — unity small-signal gain; compresses transients
+//         + k·y·|y|          — adds 2nd-harmonic (even-harmonic, tube character)
+//   DC block @5 Hz           — removes any DC shift introduced by asymmetry
+//   Dry/wet  (1-t)·in + t·wet
+//
+// At t=0: fully transparent.
+// At t=1: heavy harmonic saturation; sub gets compressed by nonlinearity
+//         (large-amplitude fundamentals hit harder → energy redistributes to harmonics).
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -22,10 +28,14 @@ public:
 
     void Reset()
     {
-        for (int b = 0; b < 4; ++b) mBand[b].Reset();
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            mPreLPy[ch] = 0.0;
+            mDCx[ch]    = 0.0;
+            mDCy[ch]    = 0.0;
+        }
     }
 
-    // norm in [0..1]
     void SetAmount(double norm)
     {
         mT = std::clamp(norm, 0.0, 1.0);
@@ -39,113 +49,75 @@ public:
 
         const double drive  = mDrive;
         const double invD   = 1.0 / drive;
+        const double evenK  = mEvenK;
+        const double wet    = mT;
+        const double dry    = 1.0 - wet;
+        const double lpA    = mPreLP_a;
+        const double lpB    = mPreLP_b;
+        const double dcR    = mDC_r;
 
         for (int i = 0; i < nFrames; ++i)
         {
             for (int ch = 0; ch < 2; ++ch)
             {
-                double y = (double)io[ch][i];
-                y = mBand[0].Process(y, ch);
-                y = mBand[1].Process(y, ch);
-                y = mBand[2].Process(y, ch);
-                y = mBand[3].Process(y, ch);
-                y = std::tanh(y * drive) * invD;
-                io[ch][i] = (S)y;
+                const double x = (double)io[ch][i];
+
+                // 1. Pre-LP: smooth out HF before saturation (limits aliasing)
+                mPreLPy[ch] = lpA * mPreLPy[ch] + lpB * x;
+                const double xLP = mPreLPy[ch];
+
+                // 2. Drive + waveshaper
+                //    tanh(x*D)/D → unity small-signal gain, soft ceiling
+                const double sat  = std::tanh(xLP * drive) * invD;
+
+                //    Add even-harmonic term: sat * |sat| is antisymmetric x²
+                //    (2nd harmonic dominant → tube/transformer warmth)
+                const double yWet = sat + evenK * sat * std::abs(sat);
+
+                // 3. DC block: remove DC offset introduced by asymmetry
+                const double dcIn    = yWet;
+                const double dcOut   = dcIn - mDCx[ch] + dcR * mDCy[ch];
+                mDCx[ch] = dcIn;
+                mDCy[ch] = dcOut;
+
+                // 4. Dry / wet blend
+                io[ch][i] = (S)(dry * x + wet * dcOut);
             }
         }
     }
 
 private:
-    struct Biquad
-    {
-        double b0=1, b1=0, b2=0, a1=0, a2=0;
-        double z1[2]={}, z2[2]={};
-
-        void Reset() { z1[0]=z2[0]=z1[1]=z2[1]=0.0; }
-
-        double Process(double x, int ch)
-        {
-            const double y = b0*x + z1[ch];
-            z1[ch] = b1*x - a1*y + z2[ch];
-            z2[ch] = b2*x - a2*y;
-            return y;
-        }
-
-        // Audio EQ Cookbook — peak/bell
-        void SetPeak(double fs, double f0, double Q, double dBgain)
-        {
-            constexpr double kPI = 3.14159265358979323846;
-            f0 = std::clamp(f0, 1.0, fs * 0.499);
-            Q  = std::max(Q, 0.1);
-            const double A     = std::pow(10.0, dBgain / 40.0);
-            const double w0    = 2.0 * kPI * f0 / fs;
-            const double cw    = std::cos(w0);
-            const double alpha = std::sin(w0) / (2.0 * Q);
-            const double ia0   = 1.0 / (1.0 + alpha / A);
-            b0 = (1.0 + alpha * A) * ia0;
-            b1 = -2.0 * cw         * ia0;
-            b2 = (1.0 - alpha * A) * ia0;
-            a1 = -2.0 * cw         * ia0;
-            a2 = (1.0 - alpha / A) * ia0;
-        }
-
-        // Audio EQ Cookbook — low shelf
-        void SetLowShelf(double fs, double f0, double S, double dBgain)
-        {
-            constexpr double kPI = 3.14159265358979323846;
-            f0 = std::clamp(f0, 1.0, fs * 0.499);
-            S  = std::max(S, 0.01);
-            const double A     = std::pow(10.0, dBgain / 40.0);
-            const double w0    = 2.0 * kPI * f0 / fs;
-            const double cw    = std::cos(w0);
-            const double sqA2  = 2.0 * std::sqrt(A);
-            const double alpha = std::sin(w0) * 0.5 *
-                                 std::sqrt((A + 1.0/A) * (1.0/S - 1.0) + 2.0);
-            const double a0    = (A+1.0) + (A-1.0)*cw + sqA2*alpha;
-            b0 =  A * ((A+1.0) - (A-1.0)*cw + sqA2*alpha) / a0;
-            b1 =  2.0*A * ((A-1.0) - (A+1.0)*cw)          / a0;
-            b2 =  A * ((A+1.0) - (A-1.0)*cw - sqA2*alpha) / a0;
-            a1 = -2.0 * ((A-1.0) + (A+1.0)*cw)            / a0;
-            a2 =        ((A+1.0) + (A-1.0)*cw - sqA2*alpha) / a0;
-        }
-
-        // Audio EQ Cookbook — high shelf
-        void SetHighShelf(double fs, double f0, double S, double dBgain)
-        {
-            constexpr double kPI = 3.14159265358979323846;
-            f0 = std::clamp(f0, 1.0, fs * 0.499);
-            S  = std::max(S, 0.01);
-            const double A     = std::pow(10.0, dBgain / 40.0);
-            const double w0    = 2.0 * kPI * f0 / fs;
-            const double cw    = std::cos(w0);
-            const double sqA2  = 2.0 * std::sqrt(A);
-            const double alpha = std::sin(w0) * 0.5 *
-                                 std::sqrt((A + 1.0/A) * (1.0/S - 1.0) + 2.0);
-            const double a0    = (A+1.0) - (A-1.0)*cw + sqA2*alpha;
-            b0 =  A * ((A+1.0) + (A-1.0)*cw + sqA2*alpha) / a0;
-            b1 = -2.0*A * ((A-1.0) + (A+1.0)*cw)          / a0;
-            b2 =  A * ((A+1.0) + (A-1.0)*cw - sqA2*alpha) / a0;
-            a1 =  2.0 * ((A-1.0) - (A+1.0)*cw)            / a0;
-            a2 =        ((A+1.0) - (A-1.0)*cw - sqA2*alpha) / a0;
-        }
-    };
-
     void Recalc()
     {
+        constexpr double kPI = 3.14159265358979323846;
         const double t = mT;
 
-        // Measured from AW BG-Drums ~150% vs raw:
-        mBand[0].SetLowShelf (mSR,    90.0, 0.50, -8.5 * t);  // deep sub cut
-        mBand[1].SetPeak     (mSR,   300.0, 1.20, +3.5 * t);  // body boost
-        mBand[2].SetHighShelf(mSR,  8000.0, 0.70, +3.5 * t);  // HF presence
-        mBand[3].SetHighShelf(mSR, 14000.0, 0.80, +6.0 * t);  // air / harmonics
+        // Drive: 1× (transparent) → 4.5× at full knob
+        mDrive = 1.0 + 3.5 * t;
 
-        // Drive: tanh(x*d)/d — unity small-signal gain, adds real harmonic content
-        mDrive = 1.0 + 2.0 * t;
+        // Even-harmonic blend: 0 → 0.6 (tube warmth; 2nd harmonic dominant)
+        mEvenK = 0.6 * t;
+
+        // Pre-LP at 8 kHz — 1-pole IIR
+        {
+            const double a = std::exp(-2.0 * kPI * 8000.0 / mSR);
+            mPreLP_a = a;
+            mPreLP_b = 1.0 - a;
+        }
+
+        // DC blocker: 1-pole HP at ~5 Hz
+        mDC_r = std::exp(-2.0 * kPI * 5.0 / mSR);
     }
 
-    double mSR   = 44100.0;
-    double mT    = 0.0;
-    double mDrive = 1.0;
-    Biquad mBand[4];
+    double mSR     = 44100.0;
+    double mT      = 0.0;
+    double mDrive  = 1.0;
+    double mEvenK  = 0.0;
+    double mPreLP_a = 0.0;
+    double mPreLP_b = 1.0;
+    double mDC_r    = 0.9993;
+
+    double mPreLPy[2] = {};
+    double mDCx[2]    = {};
+    double mDCy[2]    = {};
 };
