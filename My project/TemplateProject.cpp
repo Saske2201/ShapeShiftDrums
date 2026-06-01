@@ -2851,11 +2851,13 @@ public:
         mIsOver = true;
         const bool nh = IsNoteArea(x);
         if (nh != mNoteHover) { mNoteHover = nh; }
+        if (GetUI()) GetUI()->SetMouseCursor((nh || mDragging) ? ECursor::SIZEWE : ECursor::ARROW);
         SetDirty(false);
     }
     void OnMouseOut() override
     {
         mIsOver = false; mNoteHover = false; mDragging = false;
+        if (GetUI()) GetUI()->SetMouseCursor(ECursor::ARROW);
         SetDirty(false);
     }
 
@@ -2871,6 +2873,7 @@ public:
     void OnMouseDrag(float x, float, float, float, const IMouseMod&) override
     {
         if (!mDragFromNote) return;
+        if (GetUI()) GetUI()->SetMouseCursor(ECursor::SIZEWE);
 
         const float dx = x - mDragStartX;
         if (std::abs(dx) > 2.f) { mDragged = true; mDragging = true; }
@@ -2899,7 +2902,7 @@ public:
         {
             const float noteX = mRECT.L + mRECT.W() * 0.85f;
             const IRECT entryR(noteX + 2.f, mRECT.T + 2.f, mRECT.R - 4.f, mRECT.B - 2.f);
-            mEditStr = std::to_string(mNote);
+            mEditStr = NoteToStr(mNote);
             GetUI()->CreateTextEntry(*this, IText(14.f, COLOR_WHITE), entryR, mEditStr.c_str());
         }
     }
@@ -2987,7 +2990,7 @@ class NoteMapPresetButton final : public IControl
 {
 public:
     NoteMapPresetButton(const IRECT& r, TemplateProject& plug)
-        : IControl(r), mPlug(plug) { SyncLabel(); }
+        : IControl(r), mPlug(plug) { SetTextEntryLength(32); SyncLabel(); }
 
     void Draw(IGraphics& g) override
     {
