@@ -27,15 +27,22 @@ private:
     double mAmt = 0.5;
 
     Biquad mLowEQ;   // bell +4dB @50Hz — bass boost (AW BG-Drums Tone Low)
-    Biquad mLXover;  // 200Hz LP — splits low band for kick/bass saturation
-    Biquad mXover;   // 2kHz LP — splits high band for sibilance saturation
+    Biquad mLXover;  // 150Hz LP — splits low band for kick/bass saturation
+    Biquad mXover;   // passthrough (reserved)
     Biquad mHC;      // gentle high-cut: 20kHz→12kHz (warmth)
 
-    double mLowD       = 1.0;   // low-band drive: 1→4
-    double mLowWet     = 0.0;   // low-band wet: 0→35%
-    double mSatD       = 1.0;   // high-band drive: 1→8
-    double mSatWet     = 0.0;   // high-band wet: 0→20%
+    double mLowD       = 1.0;   // low-band drive: 1→3
+    double mLowWet     = 0.0;   // low-band wet: 0→18%
+    double mSatD       = 1.0;   // full-band drive: 1→3
+    double mSatWet     = 0.0;   // full-band wet: 0→12%
     double mMakeupGain = 1.0;
+
+    // Kick-band transient enhancement (fast/slow envelope on LP signal)
+    double mKickFAtk    = 0.0, mKickFRel    = 0.0;
+    double mKickSAtk    = 0.0, mKickSRel    = 0.0;
+    double mKickBoostDB = 0.0;
+    double mKickFEnvL   = 0.0, mKickFEnvR   = 0.0;
+    double mKickSEnvL   = 0.0, mKickSEnvR   = 0.0;
 };
 
 extern template void MasterEQ::Process<float >(float*, float*, int);

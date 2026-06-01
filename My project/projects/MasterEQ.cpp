@@ -34,7 +34,11 @@ void MasterEQ::Biquad::SetPeak(double fs, double f0, double Q, double dBgain)
 
 void MasterEQ::Prepare(double sr) { mSR = (sr > 0.0 ? sr : 44100.0); Recalc(); Reset(); }
 
-void MasterEQ::Reset() { mLowEQ.Reset(); mLXover.Reset(); mXover.Reset(); mHC.Reset(); }
+void MasterEQ::Reset()
+{
+    mLowEQ.Reset(); mLXover.Reset(); mXover.Reset(); mHC.Reset();
+    mKickFEnvL = mKickFEnvR = mKickSEnvL = mKickSEnvR = 0.0;
+}
 
 void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); Recalc(); }
 
@@ -43,6 +47,7 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 //   LowEQ(50Hz bell)         — bass boost: 0→+4dB  [AW BG-Drums Tone Low]
 //   → LP(150Hz) split
 //       low  → tanh(low·Dlo) — sub-bass warmth: 0→18% wet, D 1→3
+//       low  → fast/slow env — kick transient boost: 0→+8dB on LP band
 //   → Full-band gentle sat   — tanh(x·Dhi): 0→12% wet, D 1→3
 //                              uniform warmth without HP boost (no sandiness)
 //   → HC(12–20kHz)           — warmth rolloff  [Saturn 2 IR]
@@ -75,6 +80,16 @@ void MasterEQ::Recalc()
 
     const double hcHz = 20000.0 * std::pow(12000.0 / 20000.0, t);
     mHC.SetLowPass(mSR, hcHz, 0.7071);
+
+    // Kick-band transient: fast/slow envelope on LP(150Hz) signal
+    auto tc = [this](double ms) -> double {
+        return 1.0 - std::exp(-1.0 / (std::max(0.0001, ms) * 0.001 * mSR));
+    };
+    mKickFAtk   = tc(0.4);    // fast attack  — catches kick transient
+    mKickFRel   = tc(12.0);   // fast release
+    mKickSAtk   = tc(80.0);   // slow attack  — tracks body/average level
+    mKickSRel   = tc(200.0);  // slow release
+    mKickBoostDB = 8.0 * t;   // max boost: 0→+8 dB
 }
 
 // -------- DSP --------
@@ -105,13 +120,31 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
 
         // Sub-bass saturation: LP(150Hz) → tanh → blend
         // Targeted at kick/bass sub-content only; harmonics land in body (150–450Hz)
+        double lpL, lpR;
         {
-            const double lpL = lx.b0*xL + lx.z1L;
+            lpL = lx.b0*xL + lx.z1L;
             lx.z1L = lx.b1*xL - lx.a1*lpL + lx.z2L; lx.z2L = lx.b2*xL - lx.a2*lpL;
-            const double lpR = lx.b0*xR + lx.z1R;
+            lpR = lx.b0*xR + lx.z1R;
             lx.z1R = lx.b1*xR - lx.a1*lpR + lx.z2R; lx.z2R = lx.b2*xR - lx.a2*lpR;
             xL += (std::tanh(lpL * Dlo) - lpL) * wlo;
             xR += (std::tanh(lpR * Dlo) - lpR) * wlo;
+        }
+
+        // Kick-band transient boost: fast/slow envelope → boost LP content on attacks
+        if (mKickBoostDB > 0.0)
+        {
+            const double mL = std::abs(lpL), mR = std::abs(lpR);
+            mKickFEnvL += (mL - mKickFEnvL) * (mL > mKickFEnvL ? mKickFAtk : mKickFRel);
+            mKickFEnvR += (mR - mKickFEnvR) * (mR > mKickFEnvR ? mKickFAtk : mKickFRel);
+            mKickSEnvL += (mL - mKickSEnvL) * (mL > mKickSEnvL ? mKickSAtk : mKickSRel);
+            mKickSEnvR += (mR - mKickSEnvR) * (mR > mKickSEnvR ? mKickSAtk : mKickSRel);
+            const double Fm  = 0.5 * (mKickFEnvL + mKickFEnvR);
+            const double Sm  = 0.5 * (mKickSEnvL + mKickSEnvR) + 1e-9;
+            const double rel = std::max(0.0, Fm / Sm - 1.0);  // 0 = no transient
+            const double mask = rel / (rel + 0.4);             // soft knee 0..1
+            const double boost = std::pow(10.0, mKickBoostDB * mask / 20.0);
+            xL += lpL * (boost - 1.0);
+            xR += lpR * (boost - 1.0);
         }
 
         // Full-band gentle saturation (Saturn 2 Warm Tube character)
