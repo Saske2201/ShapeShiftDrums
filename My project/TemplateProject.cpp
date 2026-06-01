@@ -2857,8 +2857,8 @@ public:
         if (mNoteHover && !mDragging)
         {
             IText at(14.f, IColor(200, 255, 215, 80), nullptr, EAlign::Near, EVAlign::Middle);
-            IRECT al = noteBox; al.R = al.L + 16.f;
-            IRECT ar = noteBox; ar.L = ar.R - 16.f;
+            IRECT al = noteBox; al.L += 4.f; al.R = al.L + 16.f;
+            IRECT ar = noteBox; ar.R -= 4.f; ar.L = ar.R - 16.f;
             g.DrawText(at, "<", al);
             IText at2(14.f, IColor(200, 255, 215, 80), nullptr, EAlign::Far, EVAlign::Middle);
             g.DrawText(at2, ">", ar);
