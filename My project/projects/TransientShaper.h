@@ -31,6 +31,9 @@ public:
         designHPF(200.0);                    // быстрый сайдчейн (атака)
         designLPF(2500.0, mLP_A, mLP_B);     // медленный сайдчейн (сустейн)
 
+        // Коэффициент сглаживания параметров (~20 мс)
+        mSmoothCoef = 1.0 - std::exp(-1.0 / (0.020 * mSR));
+
         // Look-ahead буферы
         mLookN = (int)std::clamp<int>(std::lround(0.0045 * mSR), 1, 8192);
         mDL.assign((size_t)mLookN, 0.0);
@@ -40,9 +43,10 @@ public:
         Reset();
     }
 
-    // Две единственные ручки (-1..+1)
-    void SetTransientAmt(double a) { mAmtT = std::clamp(a, -1.0, 1.0); }
-    void SetSustainAmt(double a) { mAmtS = std::clamp(a, -1.0, 1.0); }
+    // Две единственные ручки (-1..+1).
+    // Значения сглаживаются внутри Process (~20 мс) — нет скачков гейна при быстром движении.
+    void SetTransientAmt(double a) { mTgtT = std::clamp(a, -1.0, 1.0); }
+    void SetSustainAmt(double a)   { mTgtS = std::clamp(a, -1.0, 1.0); }
 
     void Reset()
     {
@@ -63,6 +67,10 @@ public:
 
         // Память клиппера
         mClipMemL = mClipMemR = 0.0;
+
+        // Сглаженные параметры: стартуют с текущих целей
+        mAmtT = mTgtT;
+        mAmtS = mTgtS;
     }
 
     // Процесс (in-place stereo). NB: 3 аргумента — как у тебя в проекте.
@@ -71,25 +79,29 @@ public:
         using sample = iplug::sample;
         if (!L || !R || nFrames <= 0) return;
 
-        // Внутренние фиксированные настройки (как «под капотом»)
-        const double TdB = 15.0 * mAmtT;     // атака ±15 dB
-        const double SdB = 24.0 * mAmtS;     // хвост  ±24 dB
-        const double knee = 0.40;            // мягкость отклика
-        const double sensScale = 1.1;        // чувствительность
-        const double aComp = time2coef(520.0); // авто-гейн
-        const double clipT = 0.985;          // мягкий клип
+        // Фиксированные настройки (не зависят от параметров)
+        const double knee      = 0.40;
+        const double sensScale = 1.1;
+        const double aComp     = time2coef(520.0);
+        const double clipT     = 0.985;
         const double gMin = 0.20, gMax = 8.0;
+        const double sc   = mSmoothCoef;
 
         // Fast/Slow детекторы
-        const double aFAtk = time2coef(0.20);   // ms
+        const double aFAtk = time2coef(0.20);
         const double aFRel = time2coef(8.0);
-        const double slowAtkMs = 120.0;         // «тело»
-        const double slowRelMs = 320.0;
-        const double aSAtk = time2coef(slowAtkMs);
-        const double aSRel = time2coef(slowRelMs);
+        const double aSAtk = time2coef(120.0);
+        const double aSRel = time2coef(320.0);
 
         for (int i = 0; i < nFrames; ++i)
         {
+            // Сглаживание параметров — per sample (~20 мс LP).
+            // Предотвращает скачок гейна на 48 dB при быстром движении ручки → нет клипинга.
+            mAmtT += (mTgtT - mAmtT) * sc;
+            mAmtS += (mTgtS - mAmtS) * sc;
+            const double TdB = 15.0 * mAmtT;
+            const double SdB = 24.0 * mAmtS;
+
             // look-ahead (читаем задержанный, записываем текущий)
             const double dryL = (double)L[i];
             const double dryR = (double)R[i];
@@ -154,8 +166,11 @@ public:
 private:
     // === состояние ===
     double mSR = 48000.0;
-    double mAmtT = 0.0;      // -1..+1
-    double mAmtS = 0.0;      // -1..+1
+    double mTgtT = 0.0;      // цель  -1..+1  (устанавливается снаружи)
+    double mTgtS = 0.0;
+    double mAmtT = 0.0;      // текущее сглаженное значение
+    double mAmtS = 0.0;
+    double mSmoothCoef = 0.0; // коэффициент LP-сглаживания параметров
 
     // ---- HPF (1-й порядок, Tustin) для атаки ----
     double mHP_b0 = 0.0, mHP_b1 = 0.0, mHP_a1 = 0.0;
