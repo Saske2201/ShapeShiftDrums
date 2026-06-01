@@ -63,15 +63,15 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 // Signal chain per sample:
 //
 //   LowEQ(50Hz bell)         — kick body: 0→+2dB
-//   → Side bell @70.309Hz    — 0→+7.47dB, Q=0.889 (side-only, M/S)
-//   → Stereo bell @262.41Hz  — 0→+2.82dB, Q=1.0
 //   → LP(150Hz) split
 //       low  → tanh(low·Dlo) — sub-bass warmth: 0→18% wet, D 1→3
 //       low  → fast/slow env — kick transient boost: 0→+8dB
 //   → Full-band gentle sat   — tanh(x·Dhi): 0→12% wet, D 1→3
 //   → Presence shelf @1kHz   — 0→+6dB
 //   → Air shelf @8kHz        — 0→+6dB
-//   → HC 24dB/oct @12604Hz   — two cascaded LP, Q=1.015 each
+//   → Side bell @70.309Hz    — 0→+7.47dB, Q=0.889 (side-only, M/S)  ← on top
+//   → Stereo bell @262.41Hz  — 0→+2.82dB, Q=1.0                      ← on top
+//   → HC 24dB/oct @12604Hz   — two cascaded LP, Q=1.015 each          ← on top
 //   → makeupGain             — 0→−4.5dB
 //
 void MasterEQ::Recalc()
@@ -136,27 +136,6 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
             leq.z1R = leq.b1*xR - leq.a1*yR + leq.z2R; leq.z2R = leq.b2*xR - leq.a2*yR; xR = yR;
         }
 
-        // Side bell @70.309Hz — M/S: bell applied to Side only, Mid untouched
-        {
-            const double mid  = (xL + xR) * 0.5;
-            const double side = (xL - xR) * 0.5;
-            const double sy   = mSideBell.b0*side + mSideBell.z1L;
-            mSideBell.z1L = mSideBell.b1*side - mSideBell.a1*sy + mSideBell.z2L;
-            mSideBell.z2L = mSideBell.b2*side - mSideBell.a2*sy;
-            xL = mid + sy;
-            xR = mid - sy;
-        }
-
-        // Stereo bell @262.41Hz
-        {
-            const double yL = mMidBell.b0*xL + mMidBell.z1L;
-            mMidBell.z1L = mMidBell.b1*xL - mMidBell.a1*yL + mMidBell.z2L;
-            mMidBell.z2L = mMidBell.b2*xL - mMidBell.a2*yL; xL = yL;
-            const double yR = mMidBell.b0*xR + mMidBell.z1R;
-            mMidBell.z1R = mMidBell.b1*xR - mMidBell.a1*yR + mMidBell.z2R;
-            mMidBell.z2R = mMidBell.b2*xR - mMidBell.a2*yR; xR = yR;
-        }
-
         // Sub-bass saturation: LP(150Hz) → tanh → blend
         // Targeted at kick/bass sub-content only; harmonics land in body (150–450Hz)
         double lpL, lpR;
@@ -208,6 +187,27 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
             air.z1L = air.b1*xL - air.a1*yL + air.z2L; air.z2L = air.b2*xL - air.a2*yL; xL = yL;
             const double yR = air.b0*xR + air.z1R;
             air.z1R = air.b1*xR - air.a1*yR + air.z2R; air.z2R = air.b2*xR - air.a2*yR; xR = yR;
+        }
+
+        // Side bell @70.309Hz — M/S: applied to Side only after full existing chain
+        {
+            const double mid  = (xL + xR) * 0.5;
+            const double side = (xL - xR) * 0.5;
+            const double sy   = mSideBell.b0*side + mSideBell.z1L;
+            mSideBell.z1L = mSideBell.b1*side - mSideBell.a1*sy + mSideBell.z2L;
+            mSideBell.z2L = mSideBell.b2*side - mSideBell.a2*sy;
+            xL = mid + sy;
+            xR = mid - sy;
+        }
+
+        // Stereo bell @262.41Hz — after existing chain
+        {
+            const double yL = mMidBell.b0*xL + mMidBell.z1L;
+            mMidBell.z1L = mMidBell.b1*xL - mMidBell.a1*yL + mMidBell.z2L;
+            mMidBell.z2L = mMidBell.b2*xL - mMidBell.a2*yL; xL = yL;
+            const double yR = mMidBell.b0*xR + mMidBell.z1R;
+            mMidBell.z1R = mMidBell.b1*xR - mMidBell.a1*yR + mMidBell.z2R;
+            mMidBell.z2R = mMidBell.b2*xR - mMidBell.a2*yR; xR = yR;
         }
 
         // 24dB/oct high cut @12604Hz (two cascaded LP, Q=1.015) + makeup gain
