@@ -249,7 +249,6 @@ kTagSndBrowse = 6106,
 
 
 		kCtrlTagTransientKnob = 5044,
-		kCtrlTagSustainKnob = 5045,
 
 		// === NOTE SELECTOR CONTROLS (Mapping panel) ===
 		kCtrlTagNoteKick       = 7000,

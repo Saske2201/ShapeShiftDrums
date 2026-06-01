@@ -6270,24 +6270,14 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
 
             // Позиции — рядом с другими мастер-крутилками, при необходимости подправьте
             const IRECT transientKnobR = IRECT::MakeXYWH(1175.f, 454.f, 81.f, 81.f);
-            const IRECT sustainKnobR = IRECT::MakeXYWH(1160.f, 618.f, 81.f, 81.f);
-
             auto* pTransientKnob = pGraphics->AttachControl(
                 new CBodyPointerKnob(transientKnobR, body, pointer, kMasterTransient, -150.0, +150.0, 0.5),
                 kCtrlTagTransientKnob);
 
-            auto* pSustainKnob = pGraphics->AttachControl(
-                new CBodyPointerKnob(sustainKnobR, body, pointer, kMasterSustain, -150.0, +150.0, 0.5),
-                kCtrlTagSustainKnob);
-
-            
-
             pTransientKnob->Hide(true); pTransientKnob->SetDirty(false);
-            pSustainKnob->Hide(true);   pSustainKnob->SetDirty(false);
 
             // Появляться/прятаться вместе с MIXER overlays — как остальные мастер-крутилки
             pOverlayC->LinkControl(pTransientKnob); pOverlayCUnd->LinkControl(pTransientKnob);
-            pOverlayC->LinkControl(pSustainKnob);   pOverlayCUnd->LinkControl(pSustainKnob);
 
 
 
@@ -6323,7 +6313,6 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
 
             // Старт из параметров и скрыть по умолчанию (как EQ/Glue/Tame)
             setKnobFromParam(pTransientKnob, kMasterTransient);
-            setKnobFromParam(pSustainKnob, kMasterSustain);
 
             setKnobFromParam(pKickRoomKnob, kParamKickRoom);
             setKnobFromParam(pSnareRoomKnob, kParamSnareRoom);
@@ -7199,7 +7188,6 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
     OnParamChange(kParamParallel);
 
     OnParamChange(kMasterTransient);
-    OnParamChange(kMasterSustain);
 
 
     UpdateAllRoomTagGains();
@@ -7270,15 +7258,6 @@ void TemplateProject::OnParamChange(int paramIdx)
         // Левая сторона = soft: атака тише, хвост длиннее
         mMasterTransShaper.SetTransientAmt(amt * 0.30);  // ±0.30 → ±4.5 dB attack
         mMasterTransShaper.SetSustainAmt(-amt * 0.50);   // ±0.50 → ±12 dB sustain
-#if IPLUG_EDITOR
-        if (GetUI()) GetUI()->SetAllControlsDirty();
-#endif
-        return;
-    }
-    if (paramIdx == kMasterSustain) {
-        const double v = GetParam(kMasterSustain)->GetNormalized(); // 0..1
-        const double amt = (v - 0.5) * 2.0; // -1..+1
-        mMasterTransShaper.SetSustainAmt(amt);
 #if IPLUG_EDITOR
         if (GetUI()) GetUI()->SetAllControlsDirty();
 #endif
