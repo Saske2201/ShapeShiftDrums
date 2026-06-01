@@ -2811,9 +2811,6 @@ public:
                    mRECT.L + 6.f, mRECT.B - 1.f,
                    mRECT.R - 6.f, mRECT.B - 1.f);
 
-        // Hover-подсветка строки
-        if (mIsOver)
-            g.FillRect(IColor(20, 255, 255, 255), mRECT);
 
         // Layout constants
         const float noteX   = mRECT.L + mRECT.W() * 0.85f;
@@ -2859,11 +2856,11 @@ public:
         // Стрелки < > при наведении (подсказка что можно тянуть)
         if (mNoteHover && !mDragging)
         {
-            IText at(9.f, IColor(160, 255, 215, 80), nullptr, EAlign::Near, EVAlign::Middle);
-            IRECT al = noteBox; al.R = al.L + 13.f;
-            IRECT ar = noteBox; ar.L = ar.R - 13.f;
+            IText at(14.f, IColor(200, 255, 215, 80), nullptr, EAlign::Near, EVAlign::Middle);
+            IRECT al = noteBox; al.R = al.L + 16.f;
+            IRECT ar = noteBox; ar.L = ar.R - 16.f;
             g.DrawText(at, "<", al);
-            IText at2(9.f, IColor(160, 255, 215, 80), nullptr, EAlign::Far, EVAlign::Middle);
+            IText at2(14.f, IColor(200, 255, 215, 80), nullptr, EAlign::Far, EVAlign::Middle);
             g.DrawText(at2, ">", ar);
         }
     }
