@@ -40,27 +40,39 @@ void MasterEQ::SetAmount(double norm01) { mAmt = std::clamp(norm01, 0.0, 1.0); R
 
 // Signal chain per sample:
 //
-//   LowEQ(50Hz bell)          — bass boost: 0→+4dB  [matches AW BG-Drums Tone Low EQ]
-//   → LP(200Hz) split
-//       low  → tanh(low·Dlo)  — odd harmonics on kick/bass (G3 ~-20dB at full knob)
-//   → LP(2kHz) split
-//       high → tanh(hp·Dhi)   — grit/sand on sibilance       [matches Saturn 2 Warm Tube]
-//   → HC(12–20kHz)            — warmth rolloff
-//   → makeupGain              — compensates level increase
+//   LowEQ(50Hz bell)         — bass boost: 0→+4dB  [AW BG-Drums Tone Low]
+//   → LP(150Hz) split
+//       low  → tanh(low·Dlo) — sub-bass warmth: 0→18% wet, D 1→3
+//   → Full-band gentle sat   — tanh(x·Dhi): 0→12% wet, D 1→3
+//                              uniform warmth without HP boost (no sandiness)
+//   → HC(12–20kHz)           — warmth rolloff  [Saturn 2 IR]
+//   → makeupGain
+//
+// WHY no HP split: tanh on HP>2kHz produces odd harmonics (3rd, 5th) that land in
+// the harsh presence region (6–10kHz), creating "sandy" character.  A full-band
+// sat at low drive (D≤3) adds the same 2nd/3rd harmonics uniformly, which sounds
+// warm rather than gritty.
 //
 void MasterEQ::Recalc()
 {
     const double t = std::clamp(mAmt, 0.0, 1.0);
 
-    mLowD       = 1.0 + t * 3.0;                          // D: 1→4  (gentler, bass content)
-    mLowWet     = t * 0.35;                                // wet: 0→35%
-    mSatD       = 1.0 + t * 7.0;                          // D: 1→8  (harder, hi-freq content)
-    mSatWet     = t * 0.20;                                // wet: 0→20%
-    mMakeupGain = std::pow(10.0, -2.5 * t / 20.0);        // 0→−2.5dB
+    // Sub-bass harmonic warmth (AW BG-Drums Tone Low — kick body/punch)
+    mLowD   = 1.0 + t * 2.0;                        // D: 1→3
+    mLowWet = t * 0.18;                               // wet: 0→18%
 
-    mLowEQ.SetPeak(mSR,  50.0, 0.8, 4.0 * t);            // bell: 0→+4dB @50Hz, Q=0.8
-    mLXover.SetLowPass(mSR, 200.0,  0.7071);              // 200Hz Butterworth LP (fixed)
-    mXover.SetLowPass(mSR,  2000.0, 0.7071);              // 2kHz  Butterworth LP (fixed)
+    // Full-band gentle warmth (Saturn 2 Warm Tube — uniform, no HP boost)
+    mSatD   = 1.0 + t * 2.0;                        // D: 1→3
+    mSatWet = t * 0.12;                               // wet: 0→12%
+
+    mMakeupGain = std::pow(10.0, -2.0 * t / 20.0);  // 0→−2.0dB
+
+    mLowEQ.SetPeak(mSR, 50.0, 0.8, 4.0 * t);        // bell: 0→+4dB @50Hz, Q=0.8
+    mLXover.SetLowPass(mSR, 150.0, 0.7071);           // 150Hz LP (sub-bass only)
+
+    // mXover no longer used for HP split — set passthrough so state stays clean
+    mXover.b0 = 1.0; mXover.b1 = mXover.b2 = mXover.a1 = mXover.a2 = 0.0;
+
     const double hcHz = 20000.0 * std::pow(12000.0 / 20000.0, t);
     mHC.SetLowPass(mSR, hcHz, 0.7071);
 }
@@ -77,14 +89,13 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
 
     auto& leq = mLowEQ;
     auto& lx  = mLXover;
-    auto& xo  = mXover;
     auto& hc  = mHC;
 
     for (int i = 0; i < nSamples; ++i)
     {
         double xL = (double)L[i], xR = (double)R[i];
 
-        // Bass EQ: bell +4dB @50Hz (pre-sat so boosted bass drives saturator harder)
+        // Bell EQ +4dB @50Hz (pre-sat: boosted bass drives low-band sat harder)
         {
             const double yL = leq.b0*xL + leq.z1L;
             leq.z1L = leq.b1*xL - leq.a1*yL + leq.z2L; leq.z2L = leq.b2*xL - leq.a2*yL; xL = yL;
@@ -92,8 +103,8 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
             leq.z1R = leq.b1*xR - leq.a1*yR + leq.z2R; leq.z2R = leq.b2*xR - leq.a2*yR; xR = yR;
         }
 
-        // Low-band saturation: LP(200Hz) → tanh → blend
-        // Adds odd harmonics (G3,G5) to kick/bass, matching AW BG-Drums harmonic sweep
+        // Sub-bass saturation: LP(150Hz) → tanh → blend
+        // Targeted at kick/bass sub-content only; harmonics land in body (150–450Hz)
         {
             const double lpL = lx.b0*xL + lx.z1L;
             lx.z1L = lx.b1*xL - lx.a1*lpL + lx.z2L; lx.z2L = lx.b2*xL - lx.a2*lpL;
@@ -103,15 +114,12 @@ void MasterEQ::Process(T* L, T* R, int nSamples)
             xR += (std::tanh(lpR * Dlo) - lpR) * wlo;
         }
 
-        // High-band saturation: HP = signal − LP(2kHz) → tanh → blend
-        // Adds grit/sand to sibilance, matching Saturn 2 Warm Tube harmonic character
+        // Full-band gentle saturation (Saturn 2 Warm Tube character)
+        // Low drive (D≤3), low wet (≤12%): adds warmth across spectrum without
+        // selectively boosting high frequencies — avoids the "sandy" HP artifact
         {
-            const double lpL = xo.b0*xL + xo.z1L;
-            xo.z1L = xo.b1*xL - xo.a1*lpL + xo.z2L; xo.z2L = xo.b2*xL - xo.a2*lpL;
-            const double lpR = xo.b0*xR + xo.z1R;
-            xo.z1R = xo.b1*xR - xo.a1*lpR + xo.z2R; xo.z2R = xo.b2*xR - xo.a2*lpR;
-            xL += (std::tanh((xL - lpL) * Dhi) - (xL - lpL)) * whi;
-            xR += (std::tanh((xR - lpR) * Dhi) - (xR - lpR)) * whi;
+            xL += (std::tanh(xL * Dhi) - xL) * whi;
+            xR += (std::tanh(xR * Dhi) - xR) * whi;
         }
 
         // Warmth HC rolloff + makeup gain
