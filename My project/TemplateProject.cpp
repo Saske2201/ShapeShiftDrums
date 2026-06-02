@@ -2163,7 +2163,7 @@ public:
                 if (auto* vp = ui->GetControlWithTag(kCtrlTagValuePrompt))
                     if (auto* prompt = vp->As<ValuePrompt>())
                     {
-                        prompt->UsePercent(false); // проценты 0..100 без знака
+                        SetupPromptMode_(prompt);
                         prompt->FollowAndUpdate(GetHandleAnchor(), GetValue());
                     }
 
@@ -2218,15 +2218,18 @@ public:
             if (auto* vp = ui->GetControlWithTag(kCtrlTagValuePrompt))
                 if (auto* prompt = vp->As<ValuePrompt>())
                 {
-                    prompt->UsePercent(false); // проценты во время драга
+                    SetupPromptMode_(prompt);
                     prompt->FollowAndUpdate(GetHandleAnchor(), GetValue());
                 }
     }
 
-    double GetPercent() const { return GetValue() * 100.0; }
+    double GetPercent() const
+    {
+        return mBipolar ? (GetValue() - 0.5) * 200.0 : GetValue() * 100.0;
+    }
     void   SetPercent(double p)
     {
-        double v = Quantize01(p / 100.0);
+        double v = mBipolar ? Quantize01(p / 200.0 + 0.5) : Quantize01(p / 100.0);
         SetValue((float)v);
         SetDirty(true);
         if (GetParamIdx() > kNoParameter)
@@ -2259,6 +2262,7 @@ public:
     }
 
     void SetDefaultNorm(double v) { mDefaultNorm = Clip(v, 0.0, 1.0); }
+    void SetBipolar(bool b) { mBipolar = b; }
 
     void Draw(IGraphics& g) override
     {
@@ -2274,6 +2278,34 @@ public:
     }
 
 private:
+    void SetupPromptMode_(ValuePrompt* prompt) const
+    {
+        if (mBipolar)
+        {
+            prompt->SetFormatters(
+                [](double norm) -> WDL_String {
+                    const int p = (int)std::round((std::clamp(norm, 0.0, 1.0) - 0.5) * 200.0);
+                    WDL_String s;
+                    if (p > 0) s.SetFormatted(8, "+%d", p);
+                    else       s.SetFormatted(8, "%d",  p);
+                    return s;
+                },
+                [](const std::string& in) -> double {
+                    std::string s = in;
+                    for (char& c : s) if (c == ',') c = '.';
+                    char* endp = nullptr;
+                    double val = std::strtod(s.c_str(), &endp);
+                    if (endp == s.c_str()) val = 0.0;
+                    return std::clamp(val, -100.0, 100.0) / 200.0 + 0.5;
+                }
+            );
+        }
+        else
+        {
+            prompt->UsePercent(false);
+        }
+    }
+
     void ShowPrompt_()
     {
         if (auto* ui = GetUI())
@@ -2281,8 +2313,8 @@ private:
             if (auto* vp = ui->GetControlWithTag(kCtrlTagValuePrompt))
                 if (auto* prompt = vp->As<ValuePrompt>())
                 {
-                    const int param = GetParamIdx(); // фиксируем индекс параметра
-                    prompt->UsePercent(false);       // <<< проценты и при вводе
+                    const int param = GetParamIdx();
+                    SetupPromptMode_(prompt);
                     prompt->ShowFor(this, GetHandleAnchor(), GetValue(),
                         [this, param](double norm)
                         {
@@ -2302,6 +2334,7 @@ private:
     IRECT   mDst;
 
     double  mMinDeg = -135.0, mMaxDeg = 135.0;
+    bool    mBipolar = false;
 
     bool    mDragging = false;
     float   mDragStartY = 0.f;
@@ -6273,6 +6306,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
             auto* pTransientKnob = pGraphics->AttachControl(
                 new CBodyPointerKnob(transientKnobR, body, pointer, kMasterTransient, -150.0, +150.0, 0.5),
                 kCtrlTagTransientKnob);
+            pTransientKnob->As<CBodyPointerKnob>()->SetBipolar(true);
 
             pTransientKnob->Hide(true); pTransientKnob->SetDirty(false);
 
