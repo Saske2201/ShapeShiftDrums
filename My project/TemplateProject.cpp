@@ -6255,7 +6255,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
 
             // ДЕФОЛТ ЗНАЧЕНИЕ В ОБЩЕМ ЗАДАЕТСЯ ЧЕРЕЗ ЗАПЯТУЮ. ПРИМЕР: ", 0.5f"
             // ========================================================================================================== EQ KNOB ==========================================================================================================
-            const IRECT eqknob = IRECT::MakeXYWH(1085.5f, 524.5f, 81.f, 81.f);
+            const IRECT eqknob = IRECT::MakeXYWH(1100.5f, 524.5f, 81.f, 81.f);
             auto* pEqKnob = pGraphics->AttachControl(new CBodyPointerKnob(eqknob, body, pointer, kMasterEQ, -150.0, +150.0, 0.0));
 
             // ========================================================================================================== GLUE KNOB ==========================================================================================================
@@ -6263,7 +6263,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
             auto* pGlueKnob = pGraphics->AttachControl(new CBodyPointerKnob(glueknob, body, pointer, kMasterGlue, -150.0, +150.0, 0.0));
             
             // ========================================================================================================== TAME KNOB ==========================================================================================================
-            const IRECT tameknob = IRECT::MakeXYWH(1185.5f, 524.5f, 81.f, 81.f);
+            const IRECT tameknob = IRECT::MakeXYWH(1170.5f, 524.5f, 81.f, 81.f);
             auto* pTameKnob = pGraphics->AttachControl(new CBodyPointerKnob(tameknob, body, pointer, kMasterTame, -150.0, +150.0, 0.0));
             
 
