@@ -6255,21 +6255,21 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
 
             // ДЕФОЛТ ЗНАЧЕНИЕ В ОБЩЕМ ЗАДАЕТСЯ ЧЕРЕЗ ЗАПЯТУЮ. ПРИМЕР: ", 0.5f"
             // ========================================================================================================== EQ KNOB ==========================================================================================================
-            const IRECT eqknob = IRECT::MakeXYWH(1085.5f, 534.5f, 81.f, 81.f);
+            const IRECT eqknob = IRECT::MakeXYWH(1147.5f, 433.0f, 81.f, 81.f);
             auto* pEqKnob = pGraphics->AttachControl(new CBodyPointerKnob(eqknob, body, pointer, kMasterEQ, -150.0, +150.0, 0.0));
 
             // ========================================================================================================== GLUE KNOB ==========================================================================================================
-            const IRECT glueknob = IRECT::MakeXYWH(1135.5f, 624.5f, 81.f, 81.f);
+            const IRECT glueknob = IRECT::MakeXYWH(1175.5f, 554.5f, 81.f, 81.f);
             auto* pGlueKnob = pGraphics->AttachControl(new CBodyPointerKnob(glueknob, body, pointer, kMasterGlue, -150.0, +150.0, 0.0));
             
             // ========================================================================================================== TAME KNOB ==========================================================================================================
-            const IRECT tameknob = IRECT::MakeXYWH(1185.5f, 534.5f, 81.f, 81.f);
+            const IRECT tameknob = IRECT::MakeXYWH(1083.0f, 516.5f, 81.f, 81.f);
             auto* pTameKnob = pGraphics->AttachControl(new CBodyPointerKnob(tameknob, body, pointer, kMasterTame, -150.0, +150.0, 0.0));
             
 
 
             // Позиции — рядом с другими мастер-крутилками, при необходимости подправьте
-            const IRECT transientKnobR = IRECT::MakeXYWH(1135.5f, 444.5f, 81.f, 81.f);
+            const IRECT transientKnobR = IRECT::MakeXYWH(1101.5f, 631.5f, 81.f, 81.f);
             auto* pTransientKnob = pGraphics->AttachControl(
                 new CBodyPointerKnob(transientKnobR, body, pointer, kMasterTransient, -150.0, +150.0, 0.5),
                 kCtrlTagTransientKnob);
