@@ -3758,7 +3758,7 @@ TemplateProject::TemplateProject(const InstanceInfo& info)
     GetParam(kMasterGlue)->InitDouble("Master Glue", 0.0, 0.0, 1.0, 0.001, "");
 
     // Диапазон 0..1, дефолт 0.5 (= нейтрально)
-    GetParam(kMasterTransient)->InitDouble("Transient", 0.5, 0.0, 1.0, 0.001);
+    GetParam(kMasterTransient)->InitDouble("Transient", 0.0, -100.0, 100.0, 0.1);
     GetParam(kMasterSustain)->InitDouble("Sustain", 0.5, 0.0, 1.0, 0.001);
 
 
