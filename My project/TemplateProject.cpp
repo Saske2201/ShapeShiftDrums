@@ -2286,8 +2286,8 @@ private:
                 [](double norm) -> WDL_String {
                     const int p = (int)std::round((std::clamp(norm, 0.0, 1.0) - 0.5) * 200.0);
                     WDL_String s;
-                    if (p > 0) s.SetFormatted(8, "+%d", p);
-                    else       s.SetFormatted(8, "%d",  p);
+                    if (p > 0) s.SetFormatted(10, "+%d%%", p);
+                    else       s.SetFormatted(10, "%d%%",  p);
                     return s;
                 },
                 [](const std::string& in) -> double {
