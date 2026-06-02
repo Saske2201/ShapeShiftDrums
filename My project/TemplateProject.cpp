@@ -7250,12 +7250,7 @@ void TemplateProject::OnParamChange(int paramIdx)
     }
 
     if (paramIdx == kMasterTransient) {
-        const double v   = GetParam(kMasterTransient)->GetNormalized(); // 0..1
-        const double amt = (v - 0.5) * 2.0; // -1..+1, центр = нейтраль
-        // Правая сторона = punch (как AW BG Drums):
-        //   атака слегка усиливается (+3 dB макс)
-        //   sustain агрессивно срезается (-24 dB макс)
-        // Левая сторона = soft: атака тише, хвост длиннее
+        const double amt = GetParam(kMasterTransient)->Value() / 100.0; // -1..+1
         mMasterTransShaper.SetTransientAmt(amt * 0.30);  // ±0.30 → ±4.5 dB attack
         mMasterTransShaper.SetSustainAmt(-amt * 0.50);   // ±0.50 → ±12 dB sustain
 #if IPLUG_EDITOR
