@@ -7256,10 +7256,6 @@ void TemplateProject::OnParamChange(int paramIdx)
         mTameTom3.SetAmount(amt);
         mTameCymbals.SetAmount(amt);
         mTameRooms.SetAmount(amt);
-
-#if IPLUG_EDITOR
-        if (GetUI()) GetUI()->SetAllControlsDirty();
-#endif
         return;
     }
 
@@ -7276,10 +7272,6 @@ void TemplateProject::OnParamChange(int paramIdx)
         mGlueTom3.SetAmount(amt);
         mGlueCymbals.SetAmount(amt);
         mGlueRooms.SetAmount(amt);
-
-#if IPLUG_EDITOR
-        if (GetUI()) GetUI()->SetAllControlsDirty();
-#endif
         return;
     }
 
@@ -7287,9 +7279,6 @@ void TemplateProject::OnParamChange(int paramIdx)
         const double amt = GetParam(kMasterTransient)->Value() / 100.0; // -1..+1
         mMasterTransShaper.SetTransientAmt(amt * 0.30);  // ±0.30 → ±4.5 dB attack
         mMasterTransShaper.SetSustainAmt(-amt * 0.50);   // ±0.50 → ±12 dB sustain
-#if IPLUG_EDITOR
-        if (GetUI()) GetUI()->SetAllControlsDirty();
-#endif
         return;
     }
 
@@ -7307,12 +7296,6 @@ void TemplateProject::OnParamChange(int paramIdx)
          mEQTom3.SetAmount(amt);
          mEQCymbals.SetAmount(amt);
          mEQRooms.SetAmount(amt);
-
-
-
-#if IPLUG_EDITOR
-        if (GetUI()) GetUI()->SetAllControlsDirty();
-#endif
         return;
     }
 
@@ -7834,6 +7817,7 @@ void TemplateProject::OnReset()
     // сумматоры / мастер-микс
     reservePair(mTmpL, mTmpR);
     reservePair(mMixL, mMixR);
+    reservePair(mParWetL, mParWetR);
 
     // одновекторные
     mMonoBuf.reserve(N);
@@ -8428,31 +8412,29 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
             mMasterTame.Process(p, nFrames, 2);
         }
 
-        // Split: copy post-Tame signal to parallel (WET) path
-        static thread_local std::vector<sample> parWetL, parWetR;
-        if ((int)parWetL.size() < nFrames) parWetL.resize(nFrames);
-        if ((int)parWetR.size() < nFrames) parWetR.resize(nFrames);
-        std::copy(mMixL.begin(), mMixL.begin() + nFrames, parWetL.begin());
-        std::copy(mMixR.begin(), mMixR.begin() + nFrames, parWetR.begin());
-
-        // DRY path: Glue compressor
+        // DRY path: Glue always runs on main signal
         {
             sample* p[2] = { mMixL.data(), mMixR.data() };
             mMasterGlue.Process(p, nFrames, 2);
         }
 
-        // WET path: Parallel compressor (runs fully wet; SetMix01(1.0) done in Prepare)
-        mParallelComp.Process(parWetL.data(), parWetR.data(), nFrames);
-
-        // Blend DRY (Glue) + WET (ParallelComp) by the Parallel knob
+        // WET path: Parallel compressor — пропускаем целиком если ручка на нуле
         const float parMix = (float)GetParam(kParamParallel)->GetNormalized();
         if (parMix > 0.f)
         {
+            // Используем member-буферы (не thread_local) — уже зарезервированы в OnReset
+            if ((int)mParWetL.size() < nFrames) mParWetL.resize(nFrames);
+            if ((int)mParWetR.size() < nFrames) mParWetR.resize(nFrames);
+            // Копируем пост-Glue сигнал как базу для параллельного компрессора
+            std::copy(mMixL.begin(), mMixL.begin() + nFrames, mParWetL.begin());
+            std::copy(mMixR.begin(), mMixR.begin() + nFrames, mParWetR.begin());
+            mParallelComp.Process(mParWetL.data(), mParWetR.data(), nFrames);
+
             const float parDry = 1.f - parMix;
             for (int s = 0; s < nFrames; ++s)
             {
-                mMixL[s] = (sample)(parDry * (float)mMixL[s] + parMix * (float)parWetL[s]);
-                mMixR[s] = (sample)(parDry * (float)mMixR[s] + parMix * (float)parWetR[s]);
+                mMixL[s] = (sample)(parDry * (float)mMixL[s] + parMix * (float)mParWetL[s]);
+                mMixR[s] = (sample)(parDry * (float)mMixR[s] + parMix * (float)mParWetR[s]);
             }
         }
     }

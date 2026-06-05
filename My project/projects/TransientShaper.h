@@ -79,6 +79,30 @@ public:
         using sample = iplug::sample;
         if (!L || !R || nFrames <= 0) return;
 
+        // Fast bypass: оба параметра у нуля — просто пропускаем через lookahead без DSP
+        if (std::abs(mTgtT) < 1e-6 && std::abs(mTgtS) < 1e-6 &&
+            std::abs(mAmtT) < 1e-4 && std::abs(mAmtS) < 1e-4)
+        {
+            for (int i = 0; i < nFrames; ++i)
+            {
+                const double x = (double)L[i];
+                const double y = (double)R[i];
+                L[i] = (sample)mDL[(size_t)mDIdx];
+                R[i] = (sample)mDR[(size_t)mDIdx];
+                mDL[(size_t)mDIdx] = x;
+                mDR[(size_t)mDIdx] = y;
+                mDIdx = (mDIdx + 1) % mLookN;
+            }
+            // Сброс внутренних состояний чтобы не было артефактов при включении
+            mFEnvL = mFEnvR = mSEnvL = mSEnvR = 0.0;
+            mHP_x1L = mHP_x1R = mHP_y1L = mHP_y1R = 0.0;
+            mLP_zL = mLP_zR = 0.0;
+            mMeanIn = mMeanOut = 1e-6;
+            mComp = 1.0;
+            mClipMemL = mClipMemR = 0.0;
+            return;
+        }
+
         // Фиксированные настройки (не зависят от параметров)
         const double knee      = 0.40;
         const double sensScale = 1.1;
