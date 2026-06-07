@@ -48,12 +48,12 @@ public:
     // Пресет для мастер-параллели барабанов — тяжёлое сжатие, оптический характер
     void SetDrumPreset()
     {
-        SetParams(/*thresh*/ -28.f,
-                  /*ratio*/   8.f,
+        SetParams(/*thresh*/ -32.f,
+                  /*ratio*/  10.f,
                   /*attack*/  8.f,    // базовый, ускоряется при превышении
-                  /*release*/ 80.f,   // базовый, ускоряется при большом GR
-                  /*knee*/    4.f,
-                  /*makeup*/  0.f);
+                  /*release*/ 100.f,  // базовый, ускоряется при большом GR
+                  /*knee*/    3.f,
+                  /*makeup*/ 14.f);   // компенсирует глубокое GR + добавляет punch
     }
 
     template <typename T>
@@ -153,12 +153,12 @@ private:
 private:
     std::atomic<float> mMix{ 0.f };
 
-    float mThreshDB = -28.f;
-    float mRatio    =  8.f;
+    float mThreshDB = -32.f;
+    float mRatio    = 10.f;
     float mAtkMs    =  8.f;
-    float mRelMs    = 80.f;
-    float mKneeDB   =  4.f;
-    float mMakeupDB =  0.f;
+    float mRelMs    = 100.f;
+    float mKneeDB   =  3.f;
+    float mMakeupDB = 14.f;
 
     double mSR = 48000.0;
     float  mAAtkBase = 0.f;

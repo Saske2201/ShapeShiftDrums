@@ -65,9 +65,6 @@ public:
         mMeanIn = mMeanOut = 1e-6;
         mComp = 1.0;
 
-        // Память клиппера
-        mClipMemL = mClipMemR = 0.0;
-
         // Сглаженные параметры: стартуют с текущих целей
         mAmtT = mTgtT;
         mAmtS = mTgtS;
@@ -99,7 +96,6 @@ public:
             mLP_zL = mLP_zR = 0.0;
             mMeanIn = mMeanOut = 1e-6;
             mComp = 1.0;
-            mClipMemL = mClipMemR = 0.0;
             return;
         }
 
@@ -179,8 +175,8 @@ public:
             gL *= mComp; gR *= mComp;
 
             // применяем к look-ahead + мягкий клип
-            double outL = softClip(laL * gL, clipT, mClipMemL);
-            double outR = softClip(laR * gR, clipT, mClipMemR);
+            double outL = softClip(laL * gL, clipT);
+            double outR = softClip(laR * gR, clipT);
 
             L[i] = (sample)outL;
             R[i] = (sample)outR;
@@ -214,9 +210,6 @@ private:
     // авто-гейн
     double mMeanIn = 1e-6, mMeanOut = 1e-6, mComp = 1.0;
 
-    // для мягкого клипа
-    double mClipMemL = 0.0, mClipMemR = 0.0;
-
     // === утилиты ===
     static inline double dB2amp(double dB) { return std::pow(10.0, dB / 20.0); }
 
@@ -233,18 +226,14 @@ private:
         return x / (x + k);
     }
 
-    static inline double softClip(double x, double th, double& mem)
+    // Мягкое ограничение без памяти. over строго в [0,1] → кубик 1.5x-0.5x³ корректен.
+    static inline double softClip(double x, double th)
     {
-        const double a = 0.4;
-        double y = x + mem * a;
-        const double m = std::abs(y);
-        if (m <= th) { mem = 0.0; return y; }
-        const double s = (y >= 0.0 ? 1.0 : -1.0);
-        const double over = (m - th) / (1.0 - th); // 0..1
-        const double shaped = th + (1.0 - th) * (over - (over * over * over) / 3.0);
-        const double out = s * std::clamp(shaped, 0.0, 1.0);
-        mem = out - x;
-        return out;
+        const double m = std::abs(x);
+        if (m <= th) return x;
+        const double s = (x >= 0.0 ? 1.0 : -1.0);
+        const double over = std::min(1.0, (m - th) / (1.0 - th));
+        return s * (th + (1.0 - th) * (1.5 * over - 0.5 * over * over * over));
     }
 
     inline void stepEnv(double x, double& env, double aAtk, double aRel)
