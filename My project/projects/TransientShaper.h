@@ -102,9 +102,9 @@ public:
         // Фиксированные настройки (не зависят от параметров)
         const double knee      = 0.40;
         const double sensScale = 1.1;
-        const double aComp     = time2coef(150.0);  // быстрый трекинг → мало копит при смене ручки
-        const double clipT     = 0.985;
-        const double gMin = 0.20, gMax = 8.0;
+        const double aComp     = time2coef(30.0);   // 30 мс: быстро компенсирует пики на старте
+        const double clipT     = 0.90;              // мягкая зона 0.10 (было 0.015) → нет жёсткого треска
+        const double gMin = 0.20, gMax = 5.0;       // gMax снижен с 8→5 (+14 dB max)
         const double sc   = mSmoothCoef;
 
         // Fast/Slow детекторы
@@ -171,7 +171,7 @@ public:
             mMeanOut += (outMag - mMeanOut) * aComp;
             const double tgt = (mMeanOut > 1e-6 ? mMeanIn / mMeanOut : 1.0);
             mComp += (tgt - mComp) * aComp;
-            mComp = std::clamp(mComp, 0.80, 1.25); // ±2 dB max → нет большого скачка при смене ручки
+            mComp = std::clamp(mComp, 0.25, 1.25); // до -12 dB компенсации → пики не бьют в клиппер
             gL *= mComp; gR *= mComp;
 
             // применяем к look-ahead + мягкий клип
