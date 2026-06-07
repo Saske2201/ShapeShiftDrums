@@ -387,6 +387,7 @@ private:
 
 	std::vector<sample> mMixL, mMixR;
 	std::vector<sample> mParWetL, mParWetR; // буферы параллельного компрессора
+	float mParCompComp = 1.0f;             // авто-компенсация громкости параллели
 	MeterBallistics mBalKick, mBalSnare, mBalTom1, mBalTom2, mBalTom3, mBalCym, mBalRooms, mBalMaster, mBalHH, mBalCrashL, mBalCrashR, mBalSplash, mBalRide, mBalChina;;
 	
 	

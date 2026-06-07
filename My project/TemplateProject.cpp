@@ -7818,6 +7818,7 @@ void TemplateProject::OnReset()
     reservePair(mTmpL, mTmpR);
     reservePair(mMixL, mMixR);
     reservePair(mParWetL, mParWetR);
+    mParCompComp = 1.0f;
 
     // одновекторные
     mMonoBuf.reserve(N);
@@ -8412,30 +8413,57 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
             mMasterTame.Process(p, nFrames, 2);
         }
 
-        // DRY path: Glue always runs on main signal
+        // Сплит ДО Glue — копируем чистый пост-Tame сигнал на параллельный путь
+        const float parMix = (float)GetParam(kParamParallel)->GetNormalized();
+        if (parMix > 0.f)
+        {
+            if ((int)mParWetL.size() < nFrames) mParWetL.resize(nFrames);
+            if ((int)mParWetR.size() < nFrames) mParWetR.resize(nFrames);
+            std::copy(mMixL.begin(), mMixL.begin() + nFrames, mParWetL.begin());
+            std::copy(mMixR.begin(), mMixR.begin() + nFrames, mParWetR.begin());
+        }
+
+        // DRY path: Glue — всегда на основном сигнале
         {
             sample* p[2] = { mMixL.data(), mMixR.data() };
             mMasterGlue.Process(p, nFrames, 2);
         }
 
-        // WET path: Parallel compressor — пропускаем целиком если ручка на нуле
-        const float parMix = (float)GetParam(kParamParallel)->GetNormalized();
         if (parMix > 0.f)
         {
-            // Используем member-буферы (не thread_local) — уже зарезервированы в OnReset
-            if ((int)mParWetL.size() < nFrames) mParWetL.resize(nFrames);
-            if ((int)mParWetR.size() < nFrames) mParWetR.resize(nFrames);
-            // Копируем пост-Glue сигнал как базу для параллельного компрессора
-            std::copy(mMixL.begin(), mMixL.begin() + nFrames, mParWetL.begin());
-            std::copy(mMixR.begin(), mMixR.begin() + nFrames, mParWetR.begin());
+            // WET path: параллельный компрессор на пре-Glue копии
             mParallelComp.Process(mParWetL.data(), mParWetR.data(), nFrames);
 
-            const float parDry = 1.f - parMix;
+            // Аддитивный микс: dry + parMix*wet (как параллельный канал в DAW)
+            // Одновременно замеряем мощность до и после для авто-компенсации
+            float inPow = 0.f, outPow = 0.f;
             for (int s = 0; s < nFrames; ++s)
             {
-                mMixL[s] = (sample)(parDry * (float)mMixL[s] + parMix * (float)mParWetL[s]);
-                mMixR[s] = (sample)(parDry * (float)mMixR[s] + parMix * (float)mParWetR[s]);
+                const float dL = (float)mMixL[s], dR = (float)mMixR[s];
+                inPow += dL*dL + dR*dR;
+                const float oL = dL + parMix * (float)mParWetL[s];
+                const float oR = dR + parMix * (float)mParWetR[s];
+                outPow += oL*oL + oR*oR;
+                mMixL[s] = (sample)oL;
+                mMixR[s] = (sample)oR;
             }
+
+            // Авто-компенсация громкости (~500 мс): тихо = тихо, громко = громко
+            if (outPow > 1e-15f)
+            {
+                const float tgt = std::clamp(std::sqrt(inPow / outPow), 0.4f, 1.5f);
+                const float tc  = 1.f - std::expf(-(float)nFrames / (0.5f * (float)GetSampleRate()));
+                mParCompComp += (tgt - mParCompComp) * tc;
+            }
+            for (int s = 0; s < nFrames; ++s)
+            {
+                mMixL[s] = (sample)((float)mMixL[s] * mParCompComp);
+                mMixR[s] = (sample)((float)mMixR[s] * mParCompComp);
+            }
+        }
+        else
+        {
+            mParCompComp = 1.0f; // сбрасываем когда параллель выключена
         }
     }
 
