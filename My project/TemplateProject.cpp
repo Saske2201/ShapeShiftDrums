@@ -7861,6 +7861,17 @@ void TemplateProject::ProcessMidiMsg(const iplug::IMidiMsg& msg)
 
 void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nFrames)
 {
+    // Если DAW первый OnReset() вызвал с неверным SR (до нажатия Play),
+    // а настоящий SR установился позже — обновляем DrumKit без сброса состояния.
+    {
+        const double curSR = GetSampleRate();
+        if (curSR != mLastKnownSR && curSR > 0.0)
+        {
+            mLastKnownSR = curSR;
+            static_cast<DrumKit*>(mKitOpaque)->Prepare(curSR);
+        }
+    }
+
     if (!mSndLibReady.load(std::memory_order_acquire))
     {
         const int nOutChans = NOutChansConnected();

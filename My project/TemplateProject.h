@@ -388,6 +388,7 @@ private:
 	std::vector<sample> mMixL, mMixR;
 	std::vector<sample> mParWetL, mParWetR; // буферы параллельного компрессора
 	float mParCompComp = 1.0f;             // авто-компенсация громкости параллели
+	double mLastKnownSR = 0.0;             // SR последнего DrumKit::Prepare — для детекта рассинхрона
 	MeterBallistics mBalKick, mBalSnare, mBalTom1, mBalTom2, mBalTom3, mBalCym, mBalRooms, mBalMaster, mBalHH, mBalCrashL, mBalCrashR, mBalSplash, mBalRide, mBalChina;;
 	
 	
