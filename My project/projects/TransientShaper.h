@@ -40,11 +40,6 @@ public:
         mDR.assign((size_t)mLookN, 0.0);
         mDIdx = 0;
 
-        // Fade-in после создания/переноса плагина: сглаживает старт огибающих.
-        // Reset() не трогает это поле — transport restart fade не сбрасывает.
-        mFadeIn = 0.0;
-        mFadeInStep = 1.0 / (0.200 * mSR); // 200 мс
-
         Reset();
     }
 
@@ -163,12 +158,6 @@ public:
 
             // итоговый гейн (одинаковый на оба канала)
             double g = std::clamp(dB2amp(TdB * tMask) * dB2amp(SdB * sMask), gMin, gMax);
-            // Fade-in девиации гейна: при старте плагина g→1 за 200 мс,
-            // пока fast/slow огибающие ещё не сошлись после инициализации.
-            if (mFadeIn < 1.0) {
-                mFadeIn = std::min(1.0, mFadeIn + mFadeInStep);
-                g = 1.0 + (g - 1.0) * mFadeIn;
-            }
             double gL = g, gR = g;
 
             // авто-компенсация среднего уровня
@@ -197,8 +186,6 @@ public:
 private:
     // === состояние ===
     double mSR = 48000.0;
-    double mFadeIn = 1.0;     // 0..1, fade-in при старте плагина (Prepare)
-    double mFadeInStep = 0.0;
     double mTgtT = 0.0;      // цель  -1..+1  (устанавливается снаружи)
     double mTgtS = 0.0;
     double mAmtT = 0.0;      // текущее сглаженное значение
