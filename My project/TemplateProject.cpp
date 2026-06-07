@@ -8448,11 +8448,15 @@ void TemplateProject::ProcessBlock(sample** /*inputs*/, sample** outputs, int nF
                 mMixR[s] = (sample)oR;
             }
 
-            // Авто-компенсация громкости (~500 мс): тихо = тихо, громко = громко
+            // Авто-компенсация громкости: быстрая атака (30 мс) когда выход громче,
+            // медленный release (300 мс) когда тише — нет скачка при включении ползунка.
             if (outPow > 1e-15f)
             {
-                const float tgt = std::clamp(std::sqrt(inPow / outPow), 0.4f, 1.5f);
-                const float tc  = 1.f - std::expf(-(float)nFrames / (0.5f * (float)GetSampleRate()));
+                const float tgt    = std::clamp(std::sqrt(inPow / outPow), 0.4f, 1.5f);
+                const float sr     = (float)GetSampleRate();
+                const float tcAtk  = 1.f - std::expf(-(float)nFrames / (0.030f * sr));
+                const float tcRel  = 1.f - std::expf(-(float)nFrames / (0.300f * sr));
+                const float tc     = (tgt < mParCompComp) ? tcAtk : tcRel;
                 mParCompComp += (tgt - mParCompComp) * tc;
             }
             for (int s = 0; s < nFrames; ++s)
