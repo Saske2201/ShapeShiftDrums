@@ -2,9 +2,15 @@
 #include <atomic>
 #include <algorithm>
 #include <cmath>
-#include <memory>
 
-// Лёгкий параллельный компрессор (стерео), микс управляется SetMix01()
+/*
+  РџР°СЂР°Р»Р»РµР»СЊРЅС‹Р№ РєРѕРјРїСЂРµСЃСЃРѕСЂ СЃ РїСЂРѕРіСЂР°РјРјРЅРѕ-Р·Р°РІРёСЃРёРјС‹РјРё РІСЂРµРјРµРЅРЅС‹РјРё РєРѕРЅСЃС‚Р°РЅС‚Р°РјРё.
+  РҐР°СЂР°РєС‚РµСЂ: РѕРїС‚РёС‡РµСЃРєРёР№ (FG-Stress Opto) вЂ” Р°С‚Р°РєР° СѓСЃРєРѕСЂСЏРµС‚СЃСЏ С‡РµРј СЃРёР»СЊРЅРµРµ РїСЂРµРІС‹С€РµРЅРёРµ
+  РїРѕСЂРѕРіР°, release СѓСЃРєРѕСЂСЏРµС‚СЃСЏ С‡РµРј Р±РѕР»СЊС€Рµ gain reduction.
+
+  SetMix01() вЂ” wet/dry РґР»СЏ per-stem РєРѕРјРїСЂРµСЃСЃРѕСЂРѕРІ (0..1).
+  Р”Р»СЏ РјР°СЃС‚РµСЂ-РїР°СЂР°Р»Р»РµР»Рё SetMix01(1.0) вЂ” РїРѕРґРјРµС€РёРІР°РЅРёРµ РґРµР»Р°РµС‚СЃСЏ СЃРЅР°СЂСѓР¶Рё РІ ProcessBlock.
+*/
 class ParallelComp
 {
 public:
@@ -13,64 +19,80 @@ public:
     void Prepare(double sampleRate)
     {
         mSR = (sampleRate > 0.0 ? sampleRate : 48000.0);
-        RecalcTimes_();
+        RecalcBase_();
     }
 
     void Reset()
     {
-        mEnv = 0.0f;
-        mGRdBz = 0.0f;
+        mEnv   = 0.f;
+        mGRdBz = 0.f;
     }
 
-    // Микс "мокрого" сигнала [0..1]
-    void SetMix01(float mix01) { mMix.store(std::clamp(mix01, 0.f, 1.f), std::memory_order_relaxed); }
+    void SetMix01(float mix01)
+    {
+        mMix.store(std::clamp(mix01, 0.f, 1.f), std::memory_order_relaxed);
+    }
 
-    void SetParams(float threshDB, float ratio, float attackMs, float releaseMs, float kneeDB, float makeupDB)
+    void SetParams(float threshDB, float ratio, float attackMs, float releaseMs,
+                   float kneeDB, float makeupDB)
     {
         mThreshDB = threshDB;
-        mRatio = std::max(1.f, ratio);
-        mAtkMs = std::max(0.01f, attackMs);
-        mRelMs = std::max(0.01f, releaseMs);
-        mKneeDB = std::max(0.f, kneeDB);
+        mRatio    = std::max(1.f, ratio);
+        mAtkMs    = std::max(0.1f, attackMs);
+        mRelMs    = std::max(1.f,  releaseMs);
+        mKneeDB   = std::max(0.f,  kneeDB);
         mMakeupDB = makeupDB;
-        RecalcTimes_();
+        RecalcBase_();
     }
 
+    // РџСЂРµСЃРµС‚ РґР»СЏ РјР°СЃС‚РµСЂ-РїР°СЂР°Р»Р»РµР»Рё Р±Р°СЂР°Р±Р°РЅРѕРІ вЂ” С‚СЏР¶С‘Р»РѕРµ СЃР¶Р°С‚РёРµ, РѕРїС‚РёС‡РµСЃРєРёР№ С…Р°СЂР°РєС‚РµСЂ
     void SetDrumPreset()
     {
-        SetParams(/*thresh*/ -24.f, /*ratio*/ 4.0f, /*attack*/ 5.f, /*release*/ 120.f, /*knee*/ 6.f, /*makeup*/ 0.f);
+        SetParams(/*thresh*/ -28.f,
+                  /*ratio*/   8.f,
+                  /*attack*/  8.f,    // Р±Р°Р·РѕРІС‹Р№, СѓСЃРєРѕСЂСЏРµС‚СЃСЏ РїСЂРё РїСЂРµРІС‹С€РµРЅРёРё
+                  /*release*/ 80.f,   // Р±Р°Р·РѕРІС‹Р№, СѓСЃРєРѕСЂСЏРµС‚СЃСЏ РїСЂРё Р±РѕР»СЊС€РѕРј GR
+                  /*knee*/    4.f,
+                  /*makeup*/  0.f);
     }
 
-    // Обработка in-place. T — float или double (совпадёт с вашим sample)
     template <typename T>
     void Process(T* L, T* R, int nFrames)
     {
         if (!L || !R || nFrames <= 0) return;
 
         const float mix = mMix.load(std::memory_order_relaxed);
-        if (mix <= 0.f) return; // сухо — не трогаем
+        if (mix <= 0.f) return;
 
-        const float thresh = mThreshDB;
-        const float ratio = mRatio;
-        const float knee = mKneeDB;
-        const float makeup = mMakeupDB;
+        const float thresh   = mThreshDB;
+        const float ratio    = mRatio;
+        const float knee     = mKneeDB;
+        const float makeup   = mMakeupDB;
+        const float aAtkBase = mAAtkBase;
+        const float aRelBase = mARelBase;
 
-        float env = mEnv;     // локальные копии состояний
-        float grZ = mGRdBz;
+        float env  = mEnv;
+        float grZ  = mGRdBz;
 
         for (int i = 0; i < nFrames; ++i)
         {
-            // детектор уровня
-            const float xAbs = 0.5f * (std::fabs((float)L[i]) + std::fabs((float)R[i]));
-            const float aDet = (xAbs > env ? mAAtkDet : mARelDet);
+            const float xl   = (float)L[i];
+            const float xr   = (float)R[i];
+            const float xAbs = 0.5f * (std::fabs(xl) + std::fabs(xr));
+
+            // РџСЂРѕРіСЂР°РјРјРЅРѕ-Р·Р°РІРёСЃРёРјР°СЏ Р°С‚Р°РєР°: Р±С‹СЃС‚СЂРµРµ РєРѕРіРґР° СЃРёРіРЅР°Р» СЃРёР»СЊРЅРѕ РІС‹С€Рµ РїРѕСЂРѕРіР°
+            // (РїРѕРІРµРґРµРЅРёРµ РѕРїС‚РёС‡РµСЃРєРѕРіРѕ РєРѕРјРїСЂРµСЃСЃРѕСЂР° вЂ” СЂРµР°РіРёСЂСѓРµС‚ РёРЅС‚РµРЅСЃРёРІРЅРµР№ РЅР° РіСЂРѕРјРєРёРµ СѓРґР°СЂС‹)
+            const float lvlDBsc = 20.f * std::log10(std::max(1e-12f, xAbs));
+            const float excess  = std::max(0.f, lvlDBsc - thresh);
+            const float aAtk    = std::min(1.f, aAtkBase * (1.f + excess * 0.25f));
+
+            const float aDet = (xAbs > env) ? aAtk : aRelBase;
             env += (xAbs - env) * aDet;
 
-            // уровень в dB
-            const float lvlDB = 20.0f * std::log10(std::max(1e-12f, env));
-
-            // статика (soft-knee)
-            const float delta = lvlDB - thresh;
-            float staticGRdB = 0.f;
+            // Gain reduction СЃ soft-knee
+            const float lvlDB = 20.f * std::log10(std::max(1e-12f, env));
+            const float delta  = lvlDB - thresh;
+            float staticGRdB   = 0.f;
 
             if (knee > 0.f)
             {
@@ -80,89 +102,68 @@ public:
                     staticGRdB = (1.f / ratio - 1.f) * delta;
                 else
                 {
-                    const float d = delta + knee * 0.5f; // 0..knee
+                    const float d = delta + knee * 0.5f;
                     staticGRdB = (1.f / ratio - 1.f) * (d * d) / (2.f * knee);
                 }
             }
-            else
+            else if (delta > 0.f)
             {
-                if (delta > 0.f) staticGRdB = (1.f / ratio - 1.f) * delta;
+                staticGRdB = (1.f / ratio - 1.f) * delta;
             }
 
-            // сглаживание GR (в dB)
-            const float aGR = (staticGRdB < grZ ? mAAtkGR : mARelGR);
+            // РџСЂРѕРіСЂР°РјРјРЅРѕ-Р·Р°РІРёСЃРёРјС‹Р№ release GR-СЃРјСѓР·РµСЂР°:
+            // РїСЂРё Р±РѕР»СЊС€РѕРј gain reduction release СѓСЃРєРѕСЂСЏРµС‚СЃСЏ вЂ” РґРѕР±Р°РІР»СЏРµС‚ "snap" Рё "РґС‹С…Р°РЅРёРµ"
+            const float aRelAdaptive = std::min(1.f, aRelBase * (1.f + std::fabs(grZ) * 0.12f));
+            const float aGR = (staticGRdB < grZ) ? aAtk : aRelAdaptive;
             grZ += (staticGRdB - grZ) * aGR;
 
-            // линейный коэффициент + мейк-ап
-            const float gainDB = grZ + makeup;
-            const float g = std::pow(10.f, gainDB * 0.05f);
+            // Gain + makeup
+            const float g = std::pow(10.f, (grZ + makeup) * 0.05f);
 
-            // параллельный микс
-            const float dryL = (float)L[i];
-            const float dryR = (float)R[i];
-            const float wetL = dryL * g;
-            const float wetR = dryR * g;
-
-            L[i] = (T)((1.f - mix) * dryL + mix * wetL);
-            R[i] = (T)((1.f - mix) * dryR + mix * wetR);
+            if (mix >= 1.f)
+            {
+                // РџРѕР»РЅРѕСЃС‚СЊСЋ wet (РјР°СЃС‚РµСЂ-РїР°СЂР°Р»Р»РµР»СЊ вЂ” РїРѕРґРјРµС€РёРІР°РЅРёРµ СЃРЅР°СЂСѓР¶Рё)
+                L[i] = (T)(xl * g);
+                R[i] = (T)(xr * g);
+            }
+            else
+            {
+                // Per-stem: РІРЅСѓС‚СЂРµРЅРЅРёР№ wet/dry
+                L[i] = (T)((1.f - mix) * xl + mix * xl * g);
+                R[i] = (T)((1.f - mix) * xr + mix * xr * g);
+            }
         }
 
-        mEnv = env;
+        mEnv   = env;
         mGRdBz = grZ;
     }
 
 private:
-    void RecalcTimes_()
+    void RecalcBase_()
     {
-        mAAtkDet = TimeToCoef_(mAtkMs);
-        mARelDet = TimeToCoef_(mRelMs * 1.5f);
-
-        mAAtkGR = TimeToCoef_(mAtkMs);
-        mARelGR = TimeToCoef_(mRelMs);
+        mAAtkBase = TimeToCoef_(mAtkMs);
+        mARelBase = TimeToCoef_(mRelMs);
     }
 
     float TimeToCoef_(float ms) const
     {
-        const float T = std::max(1e-3f, ms) * 0.001f;
-        return 1.f - std::exp(-1.f / (float(mSR) * T));
+        return 1.f - std::expf(-1.f / (float(mSR) * std::max(1e-3f, ms) * 0.001f));
     }
 
 private:
-    std::atomic<float> mMix{ 0.f }; // 0..1
-    float mThreshDB = -24.f;
-    float mRatio = 4.f;
-    float mAtkMs = 5.f;
-    float mRelMs = 120.f;
-    float mKneeDB = 6.f;
-    float mMakeupDB = 0.f;
+    std::atomic<float> mMix{ 0.f };
+
+    float mThreshDB = -28.f;
+    float mRatio    =  8.f;
+    float mAtkMs    =  8.f;
+    float mRelMs    = 80.f;
+    float mKneeDB   =  4.f;
+    float mMakeupDB =  0.f;
 
     double mSR = 48000.0;
+    float  mAAtkBase = 0.f;
+    float  mARelBase = 0.f;
 
-    float mAAtkDet = 0.0f, mARelDet = 0.0f;
-    float mAAtkGR = 0.0f, mARelGR = 0.0f;
-
-    float mEnv = 0.0f;
-    float mGRdBz = 0.0f;
+    float  mEnv   = 0.f;
+    float  mGRdBz = 0.f;
 };
-
-
-/*
-  Параллельный компрессор (стерео).
-
-  Идея: считаем "мокрый" сигнал (compressed) и смешиваем с "сухим" через mix.
-  Основные "крутилки"/настройки:
-    - mMix        — сухо/мокро (0..1)
-    - mThreshDB   — порог в dB
-    - mRatio      — коэффициент компрессии (>=1)
-    - mAtkMs      — атака (мс)
-    - mRelMs      — релиз (мс)
-    - mKneeDB     — ширина софт-ни (dB)
-    - mMakeupDB   — мейкап-гейн (dB)
-
-  Внутренние состояния:
-    - mEnv        — огибающая детектора уровня (linear, 0..1)
-    - mGRdBz      — сглаженная величина gain-reduction в dB (z-состояние)
-    - mAAtkDet / mARelDet — коэффициенты сглаживания детектора для атаки/релиза
-    - mAAtkGR / mARelGR   — коэффициенты сглаживания GR для атаки/релиза
-    - mSR         — sample rate
-*/
